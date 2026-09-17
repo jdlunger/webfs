@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { type FileSystem, type FSNode, childrenOf, ROOT_ID } from "./fs";
+import { useState, type DragEvent } from "react";
+import { type FileSystem, type FSNode, ROOT_ID, childrenOf } from "./fs";
 
 interface SidebarProps {
   fs: FileSystem;
@@ -8,9 +8,14 @@ interface SidebarProps {
   onCreate: (parentId: string, type: "file" | "folder") => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  onMove: (id: string, newParentId: string) => void;
 }
 
+const DRAG_MIME = "application/x-webfs-node-id";
+
 export function Sidebar(props: SidebarProps) {
+  const [rootDragOver, setRootDragOver] = useState(false);
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -24,7 +29,21 @@ export function Sidebar(props: SidebarProps) {
           </button>
         </div>
       </div>
-      <div className="sidebar-tree">
+      <div
+        className={`sidebar-tree ${rootDragOver ? "drop-target" : ""}`}
+        onDragOver={e => {
+          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+          e.preventDefault();
+          setRootDragOver(true);
+        }}
+        onDragLeave={() => setRootDragOver(false)}
+        onDrop={e => {
+          e.preventDefault();
+          setRootDragOver(false);
+          const id = e.dataTransfer.getData(DRAG_MIME);
+          if (id) props.onMove(id, ROOT_ID);
+        }}
+      >
         {childrenOf(props.fs, ROOT_ID).map(node => (
           <TreeNode key={node.id} node={node} depth={0} {...props} />
         ))}
@@ -38,10 +57,11 @@ interface TreeNodeProps extends SidebarProps {
   depth: number;
 }
 
-function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelete, onRename }: TreeNodeProps) {
+function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelete, onRename, onMove }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
+  const [dragOver, setDragOver] = useState(false);
 
   const commitRename = () => {
     setRenaming(false);
@@ -50,14 +70,43 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelet
     else setDraftName(node.name);
   };
 
+  const dragHandlers = {
+    draggable: true,
+    onDragStart: (e: DragEvent) => {
+      e.stopPropagation();
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData(DRAG_MIME, node.id);
+    },
+    onDragOver: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOver(true);
+    },
+    onDragLeave: (e: DragEvent) => {
+      e.stopPropagation();
+      setDragOver(false);
+    },
+    onDrop: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOver(false);
+      const draggedId = e.dataTransfer.getData(DRAG_MIME);
+      if (!draggedId) return;
+      const destinationFolderId = node.type === "folder" ? node.id : node.parentId ?? ROOT_ID;
+      onMove(draggedId, destinationFolderId);
+    },
+  };
+
   if (node.type === "folder") {
     const kids = childrenOf(fs, node.id);
     return (
       <div>
         <div
-          className="tree-row tree-folder"
+          className={`tree-row tree-folder ${dragOver ? "drop-target" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
           onClick={() => setExpanded(e => !e)}
+          {...dragHandlers}
         >
           <span className="tree-icon">{expanded ? "▾" : "▸"}</span>
           {renaming ? (
@@ -110,6 +159,7 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelet
             onCreate={onCreate}
             onDelete={onDelete}
             onRename={onRename}
+            onMove={onMove}
           />
         ))}
       </div>
@@ -118,9 +168,10 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelet
 
   return (
     <div
-      className={`tree-row tree-file ${selectedId === node.id ? "tree-file-selected" : ""}`}
+      className={`tree-row tree-file ${selectedId === node.id ? "tree-file-selected" : ""} ${dragOver ? "drop-target" : ""}`}
       style={{ paddingLeft: `${depth * 16 + 24}px` }}
       onClick={() => onSelectFile(node.id)}
+      {...dragHandlers}
     >
       <span className="tree-icon">·</span>
       {renaming ? (

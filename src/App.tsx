@@ -4,7 +4,11 @@ import {
   type FileSystem,
   createNode,
   deleteNode,
+  findFirstFile,
+  findNodeByPath,
+  getNodePath,
   loadFileSystem,
+  moveNode,
   renameNode,
   saveFileSystem,
   updateFileContent,
@@ -12,13 +16,30 @@ import {
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
 
+function pickInitialSelection(fs: FileSystem): string | null {
+  const path = decodeURIComponent(window.location.pathname);
+  if (path && path !== "/") {
+    const match = findNodeByPath(fs, path);
+    if (match && match.type === "file") return match.id;
+  }
+  if (fs["notes-welcome"]) return "notes-welcome";
+  return findFirstFile(fs)?.id ?? null;
+}
+
 export function App() {
   const [fs, setFs] = useState<FileSystem>(() => loadFileSystem());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => pickInitialSelection(fs));
 
   useEffect(() => {
     saveFileSystem(fs);
   }, [fs]);
+
+  useEffect(() => {
+    const path = selectedId ? getNodePath(fs, selectedId) : "/";
+    if (decodeURIComponent(window.location.pathname) !== path) {
+      window.history.replaceState(null, "", path);
+    }
+  }, [fs, selectedId]);
 
   const selectedFile = selectedId && fs[selectedId]?.type === "file" ? fs[selectedId] : null;
 
@@ -39,6 +60,10 @@ export function App() {
     setFs(prev => renameNode(prev, id, name));
   };
 
+  const handleMove = (id: string, newParentId: string) => {
+    setFs(prev => moveNode(prev, id, newParentId));
+  };
+
   const handleContentChange = (content: string) => {
     if (!selectedId) return;
     setFs(prev => updateFileContent(prev, selectedId, content));
@@ -53,6 +78,7 @@ export function App() {
         onCreate={handleCreate}
         onDelete={handleDelete}
         onRename={handleRename}
+        onMove={handleMove}
       />
       <Editor file={selectedFile} onChange={handleContentChange} />
     </div>

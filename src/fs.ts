@@ -110,3 +110,52 @@ export function updateFileContent(fs: FileSystem, id: string, content: string): 
   if (!node || node.type !== "file") return fs;
   return { ...fs, [id]: { ...node, content } };
 }
+
+function isDescendant(fs: FileSystem, ancestorId: string, nodeId: string): boolean {
+  let cursor = fs[nodeId];
+  while (cursor?.parentId) {
+    if (cursor.parentId === ancestorId) return true;
+    cursor = fs[cursor.parentId];
+  }
+  return false;
+}
+
+export function moveNode(fs: FileSystem, id: string, newParentId: string): FileSystem {
+  const node = fs[id];
+  const target = fs[newParentId];
+  if (!node || !target || target.type !== "folder") return fs;
+  if (node.parentId === newParentId) return fs;
+  if (id === newParentId || isDescendant(fs, id, newParentId)) return fs;
+  return { ...fs, [id]: { ...node, parentId: newParentId } };
+}
+
+export function getNodePath(fs: FileSystem, id: string): string {
+  const parts: string[] = [];
+  let cursor: FSNode | undefined = fs[id];
+  while (cursor && cursor.id !== ROOT_ID) {
+    parts.unshift(cursor.name);
+    cursor = cursor.parentId ? fs[cursor.parentId] : undefined;
+  }
+  return "/" + parts.map(encodeURIComponent).join("/");
+}
+
+export function findNodeByPath(fs: FileSystem, path: string): FSNode | null {
+  const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
+  let parentId = ROOT_ID;
+  let node: FSNode | undefined;
+  for (const part of parts) {
+    node = childrenOf(fs, parentId).find(n => n.name === part);
+    if (!node) return null;
+    parentId = node.id;
+  }
+  return node ?? null;
+}
+
+export function findFirstFile(fs: FileSystem, parentId: string = ROOT_ID): FSNode | null {
+  for (const child of childrenOf(fs, parentId)) {
+    if (child.type === "file") return child;
+    const found = findFirstFile(fs, child.id);
+    if (found) return found;
+  }
+  return null;
+}
