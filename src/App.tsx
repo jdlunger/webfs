@@ -1,30 +1,60 @@
-import { APITester } from "./APITester";
+import { useEffect, useState } from "react";
 import "./index.css";
-
-import logo from "./logo.svg";
-import reactLogo from "./react.svg";
+import {
+  type FileSystem,
+  createNode,
+  deleteNode,
+  loadFileSystem,
+  renameNode,
+  saveFileSystem,
+  updateFileContent,
+} from "./fs";
+import { Sidebar } from "./Sidebar";
+import { Editor } from "./Editor";
 
 export function App() {
-  return (
-    <div className="max-w-7xl mx-auto p-8 text-center relative z-10">
-      <div className="flex justify-center items-center gap-8 mb-8">
-        <img
-          src={logo}
-          alt="Bun Logo"
-          className="h-24 p-6 transition-all duration-300 hover:drop-shadow-[0_0_2em_#646cffaa] scale-120"
-        />
-        <img
-          src={reactLogo}
-          alt="React Logo"
-          className="h-24 p-6 transition-all duration-300 hover:drop-shadow-[0_0_2em_#61dafbaa] animate-[spin_20s_linear_infinite]"
-        />
-      </div>
+  const [fs, setFs] = useState<FileSystem>(() => loadFileSystem());
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-      <h1 className="text-5xl font-bold my-4 leading-tight">Bun + React</h1>
-      <p>
-        Edit <code className="bg-[#1a1a1a] px-2 py-1 rounded font-mono">src/App.tsx</code> and save to test HMR
-      </p>
-      <APITester />
+  useEffect(() => {
+    saveFileSystem(fs);
+  }, [fs]);
+
+  const selectedFile = selectedId && fs[selectedId]?.type === "file" ? fs[selectedId] : null;
+
+  const handleCreate = (parentId: string, type: "file" | "folder") => {
+    const name = type === "file" ? "untitled.txt" : "New Folder";
+    setFs(prev => {
+      const next = createNode(prev, parentId, type, name);
+      return next;
+    });
+  };
+
+  const handleDelete = (id: string) => {
+    setFs(prev => deleteNode(prev, id));
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  const handleRename = (id: string, name: string) => {
+    setFs(prev => renameNode(prev, id, name));
+  };
+
+  const handleContentChange = (content: string) => {
+    if (!selectedId) return;
+    setFs(prev => updateFileContent(prev, selectedId, content));
+  };
+
+  return (
+    <div className="app">
+      <Sidebar
+        fs={fs}
+        selectedId={selectedId}
+        onSelectFile={setSelectedId}
+        onCreate={handleCreate}
+        onDelete={handleDelete}
+        onRename={handleRename}
+      />
+      <Editor file={selectedFile} onChange={handleContentChange} />
     </div>
   );
 }
