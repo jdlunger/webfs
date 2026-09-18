@@ -25,7 +25,18 @@ body {
 .app {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
+  overflow: hidden;
+  position: relative;
+}
+
+.mobile-topbar {
+  display: none;
+}
+
+.sidebar-scrim {
+  display: none;
 }
 
 .sidebar {
@@ -177,16 +188,152 @@ body {
   color: #aaa;
 }
 
-.editor-textarea {
+.milkdown-root {
   flex: 1;
-  width: 100%;
-  resize: none;
-  border: none;
-  outline: none;
-  background: #1e1e1e;
-  color: #e0e0e0;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  padding: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.milkdown-root .milkdown {
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 48px;
+    padding: 0 8px;
+    padding-top: env(safe-area-inset-top);
+    height: calc(48px + env(safe-area-inset-top));
+    background: #181818;
+    border-bottom: 1px solid #2c2c2c;
+    flex-shrink: 0;
+    width: 100%;
+    z-index: 20;
+  }
+
+  .mobile-menu-button {
+    background: #2a2a2a;
+    color: #eee;
+    border: none;
+    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .mobile-topbar-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  /* The topbar already shows the current file name; the desktop
+     editor-header would just repeat it in a smaller, duller style
+     directly underneath. */
+  .editor-header {
+    display: none;
+  }
+
+  .app {
+    flex-direction: column;
+  }
+
+  .app > .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(82vw, 300px);
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease-out;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.45);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .app.sidebar-open > .sidebar {
+    transform: translateX(0);
+  }
+
+  .app.sidebar-open .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 30;
+  }
+
+  .editor {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .rename-input {
+    font-size: 16px;
+  }
+
+  /* Rows and buttons sized for a mouse cursor are too small to tap
+     reliably; scale them up for the mobile drawer. */
+  .sidebar-header {
+    padding: 14px 16px;
+    font-size: 14px;
+  }
+
+  .sidebar-header-actions button {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .tree-row {
+    padding: 10px 8px;
+    font-size: 16px;
+    gap: 8px;
+  }
+
+  .tree-icon {
+    width: 18px;
+  }
+
+  .tree-actions {
+    visibility: visible;
+  }
+
+  .tree-actions button {
+    padding: 6px 10px;
+    font-size: 15px;
+  }
+
+  /* Crepe's default content padding (60px 120px) is sized for a centered
+     desktop column; at phone widths the 120px side padding eats most of
+     the screen. */
+  .editor .milkdown-root .ProseMirror {
+    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  /* Crepe's default heading sizes (up to 2.625em) are tuned for wide desktop
+     columns; at phone widths they wrap into a wall of oversized text.
+     Extra specificity (vs. crepe's own `.milkdown .ProseMirror h1` reset
+     rule) is needed since it loads after this stylesheet in the bundle. */
+  .editor .milkdown-root .ProseMirror h1 {
+    font-size: 1.75em;
+  }
+
+  .editor .milkdown-root .ProseMirror h2 {
+    font-size: 1.5em;
+  }
+
+  .editor .milkdown-root .ProseMirror h3 {
+    font-size: 1.3em;
+  }
 }

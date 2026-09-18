@@ -45,19 +45,29 @@ export function Sidebar(props: SidebarProps) {
         }}
       >
         {childrenOf(props.fs, ROOT_ID).map(node => (
-          <TreeNode key={node.id} node={node} depth={0} {...props} />
+          <TreeNode
+            key={node.id}
+            node={node}
+            depth={0}
+            fs={props.fs}
+            selectedId={props.selectedId}
+            onSelectFile={props.onSelectFile}
+            onDelete={props.onDelete}
+            onRename={props.onRename}
+            onMove={props.onMove}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-interface TreeNodeProps extends SidebarProps {
+interface TreeNodeProps extends Omit<SidebarProps, "onCreate"> {
   node: FSNode;
   depth: number;
 }
 
-function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelete, onRename, onMove }: TreeNodeProps) {
+function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRename, onMove }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -137,12 +147,6 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelet
             </span>
           )}
           <div className="tree-actions" onClick={e => e.stopPropagation()}>
-            <button title="New file" onClick={() => onCreate(node.id, "file")}>
-              +f
-            </button>
-            <button title="New folder" onClick={() => onCreate(node.id, "folder")}>
-              +d
-            </button>
             <button title="Delete" onClick={() => onDelete(node.id)}>
               ×
             </button>
@@ -156,7 +160,6 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onCreate, onDelet
             fs={fs}
             selectedId={selectedId}
             onSelectFile={onSelectFile}
-            onCreate={onCreate}
             onDelete={onDelete}
             onRename={onRename}
             onMove={onMove}

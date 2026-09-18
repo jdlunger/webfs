@@ -27,20 +27,20 @@ function createSeedFileSystem(): FileSystem {
     makeNode("notes", "Notes", "folder", ROOT_ID),
     makeNode(
       "notes-welcome",
-      "welcome.txt",
+      "welcome.md",
       "file",
       "notes",
-      "Welcome to your text editor!\n\nThis is a simple file explorer + plain text editor.\nEverything you create is saved in your browser's local storage.\n\nTry editing this file, or use the sidebar buttons to add new files and folders.",
+      "# Welcome to your markdown editor!\n\nThis is a simple file explorer + **markdown** editor.\nEverything you create is saved in your browser's local storage.\n\nTry editing this file, or use the sidebar buttons to add new files and folders.",
     ),
     makeNode(
       "notes-todo",
-      "todo.txt",
+      "todo.md",
       "file",
       "notes",
-      "- Edit this file\n- Create a new folder\n- Create a new file inside it\n- Delete something you don't need",
+      "- [ ] Edit this file\n- [ ] Create a new folder\n- [ ] Create a new file inside it\n- [ ] Delete something you don't need",
     ),
     makeNode("projects", "Projects", "folder", ROOT_ID),
-    makeNode("projects-ideas", "ideas.txt", "file", "projects", "Project ideas:\n\n1. \n2. \n3. "),
+    makeNode("projects-ideas", "ideas.md", "file", "projects", "# Project ideas\n\n1. \n2. \n3. "),
   ];
   const fs: FileSystem = {};
   for (const n of nodes) fs[n.id] = n;
