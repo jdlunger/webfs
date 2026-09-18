@@ -16,8 +16,30 @@ import {
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
 
+// Bun inlines this to "/webfs" for the static GitHub Pages build (see
+// build.ts); everywhere else (bun dev / bun start, served at the domain
+// root) the reference is left unresolved, so `process` itself is undefined
+// at runtime and the access throws — caught here to fall back to "".
+function readBasePath(): string {
+  try {
+    return process.env.BUN_PUBLIC_BASE_PATH || "";
+  } catch {
+    return "";
+  }
+}
+
+const BASE_PATH = readBasePath().replace(/\/$/, "");
+
+function stripBasePath(pathname: string): string {
+  if (BASE_PATH && pathname.startsWith(BASE_PATH)) {
+    const rest = pathname.slice(BASE_PATH.length);
+    return rest === "" ? "/" : rest;
+  }
+  return pathname;
+}
+
 function pickInitialSelection(fs: FileSystem): string | null {
-  const path = decodeURIComponent(window.location.pathname);
+  const path = stripBasePath(decodeURIComponent(window.location.pathname));
   if (path && path !== "/") {
     const match = findNodeByPath(fs, path);
     if (match && match.type === "file") return match.id;
@@ -36,7 +58,7 @@ export function App() {
   }, [fs]);
 
   useEffect(() => {
-    const path = selectedId ? getNodePath(fs, selectedId) : "/";
+    const path = BASE_PATH + (selectedId ? getNodePath(fs, selectedId) : "/");
     if (decodeURIComponent(window.location.pathname) !== path) {
       window.history.replaceState(null, "", path);
     }

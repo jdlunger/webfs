@@ -16,6 +16,9 @@ const result = await Bun.build({
   sourcemap: "linked",
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
+    // GitHub Pages serves this repo under /webfs/ rather than at the
+    // domain root, so client-side routing needs to know its own prefix.
+    "process.env.BUN_PUBLIC_BASE_PATH": JSON.stringify("/webfs"),
   },
 });
 
