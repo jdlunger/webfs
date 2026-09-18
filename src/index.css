@@ -217,12 +217,12 @@ body {
 
   .mobile-menu-button {
     background: #2a2a2a;
-    color: #ccc;
+    color: #eee;
     border: none;
-    border-radius: 4px;
-    width: 32px;
-    height: 32px;
-    font-size: 16px;
+    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
     line-height: 1;
     flex-shrink: 0;
   }
@@ -232,8 +232,16 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 14px;
-    color: #ddd;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  /* The topbar already shows the current file name; the desktop
+     editor-header would just repeat it in a smaller, duller style
+     directly underneath. */
+  .editor-header {
+    display: none;
   }
 
   .app {
@@ -273,6 +281,37 @@ body {
 
   .rename-input {
     font-size: 16px;
+  }
+
+  /* Rows and buttons sized for a mouse cursor are too small to tap
+     reliably; scale them up for the mobile drawer. */
+  .sidebar-header {
+    padding: 14px 16px;
+    font-size: 14px;
+  }
+
+  .sidebar-header-actions button {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .tree-row {
+    padding: 10px 8px;
+    font-size: 16px;
+    gap: 8px;
+  }
+
+  .tree-icon {
+    width: 18px;
+  }
+
+  .tree-actions {
+    visibility: visible;
+  }
+
+  .tree-actions button {
+    padding: 6px 10px;
+    font-size: 15px;
   }
 
   /* Crepe's default content padding (60px 120px) is sized for a centered
