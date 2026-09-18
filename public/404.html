@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>webfs</title>
+    <script>
+      // GitHub Pages serves this file for any path under /webfs/ that
+      // doesn't match a real file (there's no server-side rewrite for a
+      // client-side router). Bounce back to the app with the real path
+      // tucked into a query param; App.tsx restores it on load.
+      var basePath = "/webfs";
+      var path = location.pathname.slice(basePath.length) || "/";
+      location.replace(basePath + "/?redirect=" + encodeURIComponent(path));
+    </script>
+  </head>
+  <body></body>
+</html>

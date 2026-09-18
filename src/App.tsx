@@ -38,6 +38,19 @@ function stripBasePath(pathname: string): string {
   return pathname;
 }
 
+// GitHub Pages has no server-side rewrite for a client-side router, so a
+// fresh load of a deep link (e.g. /webfs/Notes/todo.md) 404s; public/404.html
+// bounces it back here with the real path in ?redirect=. Restore it before
+// anything reads the URL.
+function restoreRedirectedPath(): void {
+  const params = new URLSearchParams(window.location.search);
+  const redirect = params.get("redirect");
+  if (redirect === null) return;
+  window.history.replaceState(null, "", BASE_PATH + redirect);
+}
+
+restoreRedirectedPath();
+
 function pickInitialSelection(fs: FileSystem): string | null {
   const path = stripBasePath(decodeURIComponent(window.location.pathname));
   if (path && path !== "/") {
