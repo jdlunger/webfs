@@ -29,6 +29,7 @@ function pickInitialSelection(fs: FileSystem): string | null {
 export function App() {
   const [fs, setFs] = useState<FileSystem>(() => loadFileSystem());
   const [selectedId, setSelectedId] = useState<string | null>(() => pickInitialSelection(fs));
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     saveFileSystem(fs);
@@ -43,8 +44,13 @@ export function App() {
 
   const selectedFile = selectedId && fs[selectedId]?.type === "file" ? fs[selectedId] : null;
 
+  const handleSelectFile = (id: string) => {
+    setSelectedId(id);
+    setSidebarOpen(false);
+  };
+
   const handleCreate = (parentId: string, type: "file" | "folder") => {
-    const name = type === "file" ? "untitled.txt" : "New Folder";
+    const name = type === "file" ? "untitled.md" : "New Folder";
     setFs(prev => {
       const next = createNode(prev, parentId, type, name);
       return next;
@@ -70,11 +76,22 @@ export function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <div className="mobile-topbar">
+        <button
+          className="mobile-menu-button"
+          aria-label="Toggle file list"
+          onClick={() => setSidebarOpen(open => !open)}
+        >
+          ☰
+        </button>
+        <span className="mobile-topbar-title">{selectedFile?.name ?? "webfs"}</span>
+      </div>
+      <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />
       <Sidebar
         fs={fs}
         selectedId={selectedId}
-        onSelectFile={setSelectedId}
+        onSelectFile={handleSelectFile}
         onCreate={handleCreate}
         onDelete={handleDelete}
         onRename={handleRename}
