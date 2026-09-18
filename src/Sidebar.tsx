@@ -13,6 +13,42 @@ interface SidebarProps {
 
 const DRAG_MIME = "application/x-webfs-node-id";
 
+interface MoveTarget {
+  id: string;
+  label: string;
+}
+
+// Drag-and-drop (used below) has no touch equivalent on mobile Safari, so
+// this gives every row a "Move to…" picker that works by tap or click too.
+function listMoveTargets(fs: FileSystem, node: FSNode): MoveTarget[] {
+  const blocked = new Set<string>();
+  if (node.type === "folder") {
+    const collectDescendantFolders = (id: string) => {
+      blocked.add(id);
+      for (const child of childrenOf(fs, id)) {
+        if (child.type === "folder") collectDescendantFolders(child.id);
+      }
+    };
+    collectDescendantFolders(node.id);
+  }
+
+  const targets: MoveTarget[] = [];
+  if (!blocked.has(ROOT_ID) && node.parentId !== ROOT_ID) {
+    targets.push({ id: ROOT_ID, label: "/" });
+  }
+  const walk = (parentId: string, path: string) => {
+    for (const child of childrenOf(fs, parentId)) {
+      if (child.type !== "folder") continue;
+      if (!blocked.has(child.id) && child.id !== node.parentId) {
+        targets.push({ id: child.id, label: `${path}${child.name}` });
+      }
+      walk(child.id, `${path}${child.name}/`);
+    }
+  };
+  walk(ROOT_ID, "/");
+  return targets;
+}
+
 export function Sidebar(props: SidebarProps) {
   const [rootDragOver, setRootDragOver] = useState(false);
 
@@ -72,6 +108,7 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
   const [dragOver, setDragOver] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   const commitRename = () => {
     setRenaming(false);
@@ -108,6 +145,84 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
     },
   };
 
+  const nameSection = renaming ? (
+    <input
+      autoFocus
+      className="rename-input"
+      value={draftName}
+      onClick={e => e.stopPropagation()}
+      onChange={e => setDraftName(e.target.value)}
+      onBlur={commitRename}
+      onKeyDown={e => {
+        if (e.key === "Enter") commitRename();
+        if (e.key === "Escape") {
+          setDraftName(node.name);
+          setRenaming(false);
+        }
+      }}
+    />
+  ) : (
+    <span
+      className="tree-name"
+      onDoubleClick={e => {
+        e.stopPropagation();
+        setRenaming(true);
+      }}
+    >
+      {node.name}
+    </span>
+  );
+
+  const actionsSection = renaming ? null : (
+    <div className="tree-actions" onClick={e => e.stopPropagation()}>
+      {actionsOpen ? (
+        <>
+          <button
+            title="Rename"
+            onClick={() => {
+              setRenaming(true);
+              setActionsOpen(false);
+            }}
+          >
+            ✎
+          </button>
+          <select
+            className="tree-move-select"
+            title="Move to…"
+            value=""
+            onChange={e => {
+              const targetId = e.target.value;
+              if (targetId) onMove(node.id, targetId);
+              setActionsOpen(false);
+            }}
+          >
+            <option value="" disabled>
+              ⇄
+            </option>
+            {listMoveTargets(fs, node).map(target => (
+              <option key={target.id} value={target.id}>
+                {target.label}
+              </option>
+            ))}
+          </select>
+          <button
+            title="Delete"
+            onClick={() => {
+              setActionsOpen(false);
+              onDelete(node.id);
+            }}
+          >
+            ×
+          </button>
+        </>
+      ) : (
+        <button title="More actions" onClick={() => setActionsOpen(true)}>
+          ⋯
+        </button>
+      )}
+    </div>
+  );
+
   if (node.type === "folder") {
     const kids = childrenOf(fs, node.id);
     return (
@@ -119,38 +234,8 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
           {...dragHandlers}
         >
           <span className="tree-icon">{expanded ? "▾" : "▸"}</span>
-          {renaming ? (
-            <input
-              autoFocus
-              className="rename-input"
-              value={draftName}
-              onClick={e => e.stopPropagation()}
-              onChange={e => setDraftName(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={e => {
-                if (e.key === "Enter") commitRename();
-                if (e.key === "Escape") {
-                  setDraftName(node.name);
-                  setRenaming(false);
-                }
-              }}
-            />
-          ) : (
-            <span
-              className="tree-name"
-              onDoubleClick={e => {
-                e.stopPropagation();
-                setRenaming(true);
-              }}
-            >
-              {node.name}
-            </span>
-          )}
-          <div className="tree-actions" onClick={e => e.stopPropagation()}>
-            <button title="Delete" onClick={() => onDelete(node.id)}>
-              ×
-            </button>
-          </div>
+          {nameSection}
+          {actionsSection}
         </div>
         {expanded && kids.map(child => (
           <TreeNode
@@ -177,38 +262,8 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
       {...dragHandlers}
     >
       <span className="tree-icon">·</span>
-      {renaming ? (
-        <input
-          autoFocus
-          className="rename-input"
-          value={draftName}
-          onClick={e => e.stopPropagation()}
-          onChange={e => setDraftName(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={e => {
-            if (e.key === "Enter") commitRename();
-            if (e.key === "Escape") {
-              setDraftName(node.name);
-              setRenaming(false);
-            }
-          }}
-        />
-      ) : (
-        <span
-          className="tree-name"
-          onDoubleClick={e => {
-            e.stopPropagation();
-            setRenaming(true);
-          }}
-        >
-          {node.name}
-        </span>
-      )}
-      <div className="tree-actions" onClick={e => e.stopPropagation()}>
-        <button title="Delete" onClick={() => onDelete(node.id)}>
-          ×
-        </button>
-      </div>
+      {nameSection}
+      {actionsSection}
     </div>
   );
 }

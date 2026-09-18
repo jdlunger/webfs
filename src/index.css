@@ -157,6 +157,25 @@ body {
   color: #fff;
 }
 
+.tree-move-select {
+  background: transparent;
+  color: #aaa;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tree-move-select:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.tree-move-select option {
+  color: #000;
+}
+
 .rename-input {
   flex: 1;
   background: #101010;
@@ -307,9 +326,11 @@ body {
 
   .tree-actions {
     visibility: visible;
+    gap: 6px;
   }
 
-  .tree-actions button {
+  .tree-actions button,
+  .tree-move-select {
     padding: 6px 10px;
     font-size: 15px;
   }
