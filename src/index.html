@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>webfs</title>
+
+    <meta name="theme-color" content="#181818" />
+
+    <!-- iOS ignores the manifest's `display: standalone` for Add to Home
+         Screen and needs these instead (Safari has supported the manifest
+         itself only since iOS 16.4, and still not for `display`). -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="webfs" />
+
+    <!-- The manifest/icon <link> tags are inserted at runtime (see
+         frontend.tsx) rather than written here: Bun's HTML bundler resolves
+         *every* <link href> as a module to bundle (not just stylesheets),
+         and these live in public/ as plain static files, not part of the
+         module graph. -->
   </head>
   <body>
     <div id="root"></div>

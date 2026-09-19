@@ -82,6 +82,40 @@ depend on knowing:
 If the deploy target or path ever changes, both the `"/webfs"` literal in
 `build.ts` and in `public/404.html` need updating together.
 
+## PWA (Add to Home Screen)
+
+`public/manifest.webmanifest`, `public/sw.js`, and `public/icons/*.png` make
+this installable as a standalone iOS/Android app. They're plain static files
+under `public/`, copied into `dist/` by the deploy workflow (`cp -r public/.
+dist/`) alongside `404.html`, and served explicitly by `src/index.ts` for
+local dev — not left for the SPA wildcard route or Bun's HTML bundler:
+- The `<link rel="manifest">` / `apple-touch-icon` / `icon` tags are inserted
+  at runtime in `frontend.tsx`, not written as static `<link>` tags in
+  `index.html`. Bun's HTML bundler resolves the `href` of *every* `<link>`
+  tag it finds as a module to bundle, not just stylesheets — a static tag
+  pointing at a `public/` file (outside the module graph) fails to resolve
+  at build time. Runtime-inserted relative hrefs resolve against
+  `document.baseURI`, which already carries the `/webfs` prefix in
+  production the same way a static tag would.
+- `src/index.ts` lists the three icon files individually rather than via a
+  `{ dir: "./public/icons" }` route: pairing a directory route with an HTML
+  import route makes this Bun version (1.3.11) misdetect the dev server as
+  a React Server Components framework project and refuse to start
+  (`Failed to resolve 'react-server-dom-bun/server'`).
+- `manifest.webmanifest`'s `start_url`/`scope` are `"."`, resolved relative
+  to the manifest's own URL (not the document's) — that's what makes the
+  same file correct both at the domain root (`bun dev`) and under `/webfs/`
+  (production) without needing a build-time-injected base path the way
+  `App.tsx` needs one for routing.
+- `sw.js` only precaches the shell route and the manifest; it can't precache
+  the JS/CSS chunks because `build.ts` content-hashes their filenames. It
+  instead caches every same-origin GET the first time it's actually
+  fetched (cache-first for assets, network-first with a shell fallback for
+  navigations) — sufficient for a repeat/offline load, since the
+  `index.html` a browser has cached always references the chunk files that
+  were cached alongside it. Registered from `frontend.tsx` only when
+  `NODE_ENV === "production"`, so it never fights `bun --hot`'s HMR.
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
