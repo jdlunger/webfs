@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Crepe } from "@milkdown/crepe";
+import { editorViewOptionsCtx } from "@milkdown/kit/core";
 // Import the common feature styles individually rather than the
 // `theme/common/style.css` bundle: that bundle pulls in `latex.css`, which
 // `@import`s KaTeX's full font set (~1.4MB of base64 fonts) even though the
@@ -42,6 +43,16 @@ function MilkdownEditor({ file, onChange }: MilkdownEditorProps) {
       features: {
         [Crepe.Feature.Latex]: false,
       },
+    });
+    // iOS Safari's predictive-text suggestion strip (part of its keyboard
+    // accessory bar) follows these standard attributes on the editable
+    // element; the rest of that bar (line-navigation arrows, "Done") is
+    // drawn by the OS and isn't something a page can turn off.
+    crepe.editor.config(ctx => {
+      ctx.update(editorViewOptionsCtx, prev => ({
+        ...prev,
+        attributes: { spellcheck: "false", autocorrect: "off", autocapitalize: "off" },
+      }));
     });
     crepe.on(listener => {
       listener.markdownUpdated((_ctx, markdown, prevMarkdown) => {
