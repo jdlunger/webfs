@@ -10,6 +10,14 @@ Key files: `App.tsx` (top-level state + URL routing), `Sidebar.tsx` (file
 tree, rename/move UI), `Editor.tsx` (Milkdown integration), `fs.ts`
 (filesystem data model, pure functions, no React).
 
+## Git workflow
+
+Single-maintainer hobby project, no PR review process. Commit and push
+directly to `main` for every change — don't create feature branches, and
+don't open pull requests. `main` is also the GitHub Pages deploy trigger
+(see Deployment below), so a push there goes live immediately; that's the
+intended workflow here, not an oversight.
+
 ## Editor (Milkdown / Crepe)
 
 `Editor.tsx` mounts a `@milkdown/crepe` `Crepe` instance per file (remounted
