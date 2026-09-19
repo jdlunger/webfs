@@ -1,3 +1,86 @@
+# webfs
+
+A single-page file explorer + markdown editor. Everything is client-side —
+the "filesystem" (`src/fs.ts`) is a flat `Record<id, FSNode>` persisted to
+`localStorage`, there is no backend API. `src/index.ts` (`Bun.serve()`) just
+serves `src/index.html` for local dev/preview; production is a static export
+(see Deployment below), not this server.
+
+Key files: `App.tsx` (top-level state + URL routing), `Sidebar.tsx` (file
+tree, rename/move UI), `Editor.tsx` (Milkdown integration), `fs.ts`
+(filesystem data model, pure functions, no React).
+
+## Editor (Milkdown / Crepe)
+
+`Editor.tsx` mounts a `@milkdown/crepe` `Crepe` instance per file (remounted
+via React `key={file.id}` rather than fed new content on prop changes — it's
+an uncontrolled component; content flows *out* via the `markdownUpdated`
+listener into `fs`, never back in after creation).
+
+- Import individual `@milkdown/crepe/theme/common/*.css` files, **not** the
+  `theme/common/style.css` bundle — that bundle `@import`s `latex.css`,
+  which pulls in KaTeX's full font set (~1.4MB of base64 fonts) even with
+  the Latex feature disabled. The Latex feature itself is turned off via
+  `features: { [Crepe.Feature.Latex]: false }` in the `Crepe` constructor.
+- To reach ProseMirror/Milkdown config Crepe doesn't expose directly (e.g.
+  the `spellcheck`/`autocorrect`/`autocapitalize` attributes on the
+  contenteditable), call `crepe.editor.config(ctx => ctx.update(...))`
+  before `crepe.create()`, importing the ctx slice from `@milkdown/kit/core`
+  (a direct dependency, even though `@milkdown/crepe` alone would pull it in
+  transitively — we import from it directly now).
+- iOS Safari's keyboard accessory bar (line-nav arrows, "Done") is drawn by
+  the OS for any editable region and can't be suppressed from the page; only
+  the predictive-text suggestion strip responds to the attributes above.
+
+## Mobile (iOS Safari) considerations
+
+The sidebar becomes a slide-in drawer below 768px (see `.sidebar-open` /
+`.mobile-topbar` / `.sidebar-scrim` in `index.css`), toggled from a topbar
+hamburger button. Notes learned the hard way:
+- Touch targets need real sizing (44px), not desktop hover-revealed
+  affordances — `.tree-actions` are hover-only on desktop but forced visible
+  on mobile.
+- Showing every row action (rename/move/delete) inline at once crushed file
+  names down to a few visible characters at phone widths; they're collapsed
+  behind a single `⋯` toggle per row that expands on tap instead.
+- Double-click (rename) and HTML5 drag-and-drop (move) don't work on mobile
+  Safari; both have explicit tap-friendly alternatives (a rename button, and
+  a "Move to…" `<select>` listing every folder path) alongside the
+  desktop-only double-click/drag affordances.
+- Use `100dvh`, not `100vh` (Safari's address bar resizes the viewport), and
+  `env(safe-area-inset-*)` padding for anything pinned to a screen edge.
+- Crepe's default content padding/heading sizes are tuned for a wide desktop
+  column and need phone-width overrides (see the `@media (max-width: 768px)`
+  block in `index.css`).
+
+## Deployment (GitHub Pages)
+
+`.github/workflows/deploy-pages.yml` builds with `bun run build` (→
+`build.ts`, a static `Bun.build()` export to `dist/`) and deploys via
+`actions/deploy-pages`. The Pages source must be set to "GitHub Actions" in
+repo Settings → Pages (already done); every push to `main` redeploys.
+
+The site is served under `/webfs/`, not the domain root, which two things
+depend on knowing:
+- **Client-side routing** (`App.tsx` reflects the selected file in the URL
+  via `history.replaceState`) needs that `/webfs` prefix stripped when
+  reading `location.pathname` and re-added when writing it. `build.ts`
+  `define`s `process.env.BUN_PUBLIC_BASE_PATH` to `"/webfs"` *only* for that
+  static export; `bun dev`/`bun start` (Bun.serve, served at the root) never
+  set it. Reading it is wrapped in try/catch in `App.tsx`, because an
+  un-inlined `process.env.X` reference is left as literal source referencing
+  the bare `process` global, which doesn't exist in a browser and throws —
+  confirmed by testing `Bun.build` directly; don't assume an unset env var
+  quietly becomes `undefined`.
+- **Deep links 404 on a fresh load/refresh** because GitHub Pages has no
+  server-side rewrite for a client-side router. `public/404.html` (copied
+  into `dist/` by the workflow, not processed by `build.ts`'s
+  `src/**/*.html` glob) redirects back to the app with the real path in
+  `?redirect=`; `App.tsx` restores it via `history.replaceState` before
+  anything reads the URL.
+
+If the deploy target or path ever changes, both the `"/webfs"` literal in
+`build.ts` and in `public/404.html` need updating together.
 
 Default to using Bun instead of Node.js.
 
