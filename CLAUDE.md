@@ -16,7 +16,9 @@ Single-maintainer hobby project, no PR review process. Commit and push
 directly to `main` for every change — don't create feature branches, and
 don't open pull requests. `main` is also the GitHub Pages deploy trigger
 (see Deployment below), so a push there goes live immediately; that's the
-intended workflow here, not an oversight.
+intended workflow here, not an oversight — the point is to be able to pull
+up the GitHub Pages URL right after a change and see it live, without a PR
+merge step in between.
 
 ## Editor (Milkdown / Crepe)
 
