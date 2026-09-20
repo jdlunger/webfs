@@ -8,6 +8,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { appUrl } from "./basePath";
 
 const elem = document.getElementById("root")!;
 const app = (
@@ -23,28 +24,35 @@ const app = (
 // <link> tags in index.html: Bun's HTML bundler resolves *every* <link
 // href> as a module to bundle (not just stylesheets), but these are plain
 // static files in public/, not part of the module graph, and would fail to
-// resolve as an import. Relative hrefs resolve against document.baseURI,
-// which already carries the "/webfs" prefix in production the same way a
-// static <link> tag would.
+// resolve as an import.
+//
+// The hrefs go through appUrl() rather than being written "./manifest..."
+// directly: a relative href resolves against document.baseURI, which the
+// router has already moved to the selected file's path by this point, so on
+// a deep link a bare "./" would point into a directory that doesn't exist.
 function addLink(rel: string, href: string) {
   const link = document.createElement("link");
   link.rel = rel;
   link.href = href;
   document.head.appendChild(link);
 }
-addLink("manifest", "./manifest.webmanifest");
-addLink("apple-touch-icon", "./icons/icon-180.png");
-addLink("icon", "./icons/icon-192.png");
+addLink("manifest", appUrl("manifest.webmanifest"));
+addLink("apple-touch-icon", appUrl("icons/icon-180.png"));
+addLink("icon", appUrl("icons/icon-192.png"));
 
+// Registering the worker is what makes the app usable offline; it caches the
+// shell and its content-hashed chunks on install (see public/sw.js).
+//
 // Skipped under `bun --hot` (NODE_ENV isn't "production" there) so the
-// service worker's cache-first fetches never fight HMR's live reloads.
-// Wrapped in try/catch for the same reason App.tsx wraps its read of
-// process.env.BUN_PUBLIC_BASE_PATH: an un-inlined `process.env.X` reference
-// throws in the browser, it doesn't just evaluate to undefined.
+// service worker's cache-first fetches never fight HMR's live reloads. To
+// exercise it locally, run `bun run start` instead, which builds with
+// NODE_ENV=production. Wrapped in try/catch for the same reason basePath.ts
+// wraps its read: an un-inlined `process.env.X` reference throws in the
+// browser, it doesn't just evaluate to undefined.
 try {
   if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js");
+      navigator.serviceWorker.register(appUrl("sw.js"));
     });
   }
 } catch {}

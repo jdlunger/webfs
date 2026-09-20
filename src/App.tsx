@@ -15,20 +15,7 @@ import {
 } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
-
-// Bun inlines this to "/webfs" for the static GitHub Pages build (see
-// build.ts); everywhere else (bun dev / bun start, served at the domain
-// root) the reference is left unresolved, so `process` itself is undefined
-// at runtime and the access throws — caught here to fall back to "".
-function readBasePath(): string {
-  try {
-    return process.env.BUN_PUBLIC_BASE_PATH || "";
-  } catch {
-    return "";
-  }
-}
-
-const BASE_PATH = readBasePath().replace(/\/$/, "");
+import { BASE_PATH } from "./basePath";
 
 function stripBasePath(pathname: string): string {
   if (BASE_PATH && pathname.startsWith(BASE_PATH)) {

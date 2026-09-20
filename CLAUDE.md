@@ -104,9 +104,15 @@ local dev — not left for the SPA wildcard route or Bun's HTML bundler:
   `index.html`. Bun's HTML bundler resolves the `href` of *every* `<link>`
   tag it finds as a module to bundle, not just stylesheets — a static tag
   pointing at a `public/` file (outside the module graph) fails to resolve
-  at build time. Runtime-inserted relative hrefs resolve against
-  `document.baseURI`, which already carries the `/webfs` prefix in
-  production the same way a static tag would.
+  at build time.
+- Those hrefs, and the `navigator.serviceWorker.register()` argument, go
+  through `appUrl()` from `src/basePath.ts` rather than being written as
+  plain `"./manifest.webmanifest"` / `"./sw.js"`. A relative URL resolves
+  against `document.baseURI`, and the router moves that around with
+  `history.replaceState` — so on a deep link like `/webfs/Notes/todo.md`,
+  `"./sw.js"` resolves to `/webfs/Notes/sw.js`, which 404s and then fails
+  registration on MIME type (the SPA fallback serves it `index.html`).
+  `basePath.ts` also owns the `BASE_PATH` constant `App.tsx` routes with.
 - `src/index.ts` lists the three icon files individually rather than via a
   `{ dir: "./public/icons" }` route: pairing a directory route with an HTML
   import route makes this Bun version (1.3.11) misdetect the dev server as
@@ -117,14 +123,39 @@ local dev — not left for the SPA wildcard route or Bun's HTML bundler:
   same file correct both at the domain root (`bun dev`) and under `/webfs/`
   (production) without needing a build-time-injected base path the way
   `App.tsx` needs one for routing.
-- `sw.js` only precaches the shell route and the manifest; it can't precache
-  the JS/CSS chunks because `build.ts` content-hashes their filenames. It
-  instead caches every same-origin GET the first time it's actually
-  fetched (cache-first for assets, network-first with a shell fallback for
-  navigations) — sufficient for a repeat/offline load, since the
-  `index.html` a browser has cached always references the chunk files that
-  were cached alongside it. Registered from `frontend.tsx` only when
-  `NODE_ENV === "production"`, so it never fights `bun --hot`'s HMR.
+- `sw.js` can't precache a fixed asset list, because `build.ts`
+  content-hashes the JS/CSS chunk filenames and there's no build-time
+  manifest to read. It scrapes them instead: on install it fetches the shell
+  HTML and pulls the `<script src>` / `<link href>` URLs out of it with a
+  regex. That scrape is what makes *one* online visit enough to go offline.
+  Caching each asset lazily on first fetch (the obvious cheaper option, and
+  what this did originally) cannot cover a first visit — the page's own
+  chunk requests happen before the worker has claimed the client, so nothing
+  intercepts them, and the app needs a *second* online load before it
+  survives going offline.
+- Navigations are network-first (so an online load always gets the current
+  deploy) and are cached under the shell URL, never the requested URL: every
+  client-side route renders the same document. A successful navigation also
+  re-scrapes the shell, which is what picks up newly-hashed chunks after a
+  deploy and prunes the previous deploy's — again within one online visit.
+  Assets are cache-first, which is safe precisely because their names are
+  content-hashed. Sourcemaps are excluded on purpose: `sourcemap: "linked"`
+  emits a ~10MB `.map`, several times the bundle it maps.
+- **Offline deep links redirect rather than render in place.** Serving the
+  cached shell *at* `/webfs/Notes/todo.md` produces a blank page:
+  `index.html` references its chunks relatively (`./chunk-x.js`), so they'd
+  resolve to `/webfs/Notes/chunk-x.js` and miss. Online this never comes up,
+  because Pages 404s the deep link and `public/404.html` bounces to the app
+  root first; offline there's no server to do that, so the worker issues the
+  same `?redirect=` bounce itself and `App.tsx` restores the path exactly as
+  it does online. Worth knowing before "simplifying" that branch away — it
+  only reproduces with a genuinely unreachable origin, not with devtools'
+  offline toggle, which doesn't always apply to worker-initiated fetches.
+- Registered from `frontend.tsx` only when `NODE_ENV === "production"`, so it
+  never fights `bun --hot`'s HMR. `bun run start` builds with
+  `NODE_ENV=production`, so that's how to exercise the worker locally;
+  `sw.test.ts` (`bun test`) drives its lifecycle against a fake Cache Storage
+  and network, including the first-visit, deep-link and redeploy paths.
 
 Default to using Bun instead of Node.js.
 
