@@ -8,9 +8,9 @@ production is a static export (see Deployment below), not this server.
 
 Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
-(Milkdown integration), `fs.ts` (filesystem data model, pure functions, no
-React, no storage), `storage.ts` (OPFS persistence + locking + cross-tab
-notification), `merge.ts` (three-way line merge).
+(Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
+OPFS into the in-memory record; owns session ids), `fs.ts` (pure queries over
+that record), `merge.ts` (three-way line merge).
 
 ## Git workflow
 
@@ -71,59 +71,71 @@ hamburger button. Notes learned the hard way:
 
 ## Storage (OPFS) and multiple tabs
 
-`storage.ts` owns persistence. The tree lives in `tree.json` and each file's
-text in `files/<id>.md`, both in OPFS. Splitting them is the point: a save
-touches only the file being edited, so two tabs editing different files can't
-clobber each other, and a corrupt file costs one note rather than the whole
-filesystem (the old single-blob design re-seeded from scratch on any
-`JSON.parse` failure — total loss).
+**OPFS is the only store, and the directory tree is the filesystem.** There is
+no index, no metadata file, no localStorage fallback. Everything webfs
+persists is a name, a type, a position in the hierarchy or a file's text, and
+a directory tree expresses all four — so `storage.ts` is a thin layer over
+OPFS and nothing else. Whatever is on disk is exactly what the app shows;
+there's no index to drift out of sync, and folders are inspectable and
+exportable as real directories.
 
-- **The OPFS layout is flat, not a mirror of the tree.** Nodes are addressed
-  by id, so rename and move stay pure metadata edits in `tree.json` — no file
-  moves, no name-collision rules, ids stable across both. Only `tree.json`
-  knows about hierarchy.
-- **Locks are taken only around writes**, via the Web Locks API, and give up
-  after `LOCK_TIMEOUT_MS` (750ms). Reads never lock, so a file another tab is
+- **Identity is the path.** Ids exist only in memory (`tree.ts`) and are never
+  written anywhere; they differ between tabs and between reloads. Anything
+  crossing that boundary — BroadcastChannel messages, `storage.ts` calls —
+  uses paths. `tree.ts`'s `repath()` carries an id (and its descendants')
+  across a rename or move, which is what stops the editor remounting while you
+  rename the file you're typing in. Verified in a browser: text survives.
+- **Names are stored as typed, not escaped.** OPFS rejects only `""`, `.`,
+  `..`, and names containing `/` or `\` (`isValidName`). Spaces, colons,
+  leading dots, trailing spaces and non-ASCII are all legal and round-trip
+  byte-identically — confirmed against a real browser, including `café.md` and
+  `日本語.md`. If you ever see non-ASCII names fail locally, check your locale
+  first: under `LC_CTYPE=POSIX` Chromium reports a bogus `TypeMismatchError`.
+- **Two entries can't share a name in a folder** — the filesystem forbids it.
+  `createFile`/`createDirectory` therefore uniquify ("notes 2.md") and return
+  the name actually used; always use the returned name. Creating the same
+  folder twice uniquifies rather than reusing it, which is how a stray empty
+  "Notes 2" got seeded once — group by directory when seeding.
+- **Directories have no `move()`** (files do, and it's used). Folder moves are
+  a recursive copy *then* a delete, deliberately in that order so an
+  interrupted move leaves the original intact — a duplicate is recoverable, a
+  hole isn't. `canMove()` in `fs.ts` rejects moving a folder into its own
+  subtree; without that the copy descends into the target it's creating and
+  never terminates.
+- **Locks are taken only around file writes**, via Web Locks, giving up after
+  `LOCK_TIMEOUT_MS` (750ms). Reads never lock, so a file another tab is
   mid-save is still instantly viewable. A write that loses the race returns
-  `"busy"` and `App.tsx` retries — nothing is dropped, because the pending
-  text stays queued.
+  `"busy"` and `App.tsx` retries with the text still queued. Structural
+  changes aren't locked: they're single OPFS calls, and there's no shared
+  index for them to race over — which is the main thing having no `tree.json`
+  buys. Two tabs restructuring concurrently no longer clobber each other.
 - **Content loads lazily**, when a file is opened. `FSNode.content` being
-  `undefined` means "not read yet", not "empty" — `Editor.tsx` shows a loading
-  state for that case. Don't assume a file node has text.
-- **Saves are debounced** (`WRITE_DEBOUNCE_MS`, 400ms) rather than written per
-  keystroke, and flushed on `pagehide`/hide. That flush is best-effort: OPFS
-  writes are async, so a page torn down instantly can still lose the last few
-  hundred ms.
-- **The tree is still written whole**, so per-file splitting protects file
-  *contents*, not structure: two tabs restructuring at the same instant is
-  last-writer-wins. A tree write that loses the lock race is retried rather
-  than dropped (`persistTree` in `App.tsx`) — dropping it would silently lose
-  a create, rename, move or delete.
-- **Cross-tab sync is a `BroadcastChannel`** (`webfs:changes`). A tab announces
-  only after a write succeeds; receivers re-read that file and reconcile.
-  Tree changes re-read `tree.json` via `adoptTree`, which preserves content
-  already loaded in the receiving tab (the stored tree carries none).
-- **`merge.ts` is deliberately lossy.** It reduces each side to the single run
-  of lines it changed and applies both when they don't overlap; when they do,
-  local text wins and the other tab's version of those lines is dropped. No
-  real diff, no conflict markers. It is *stable* — merging a merged result
-  changes nothing — which is what stops two tabs ping-ponging writes at each
-  other. Verified converging in a real two-tab browser run, not just in unit
-  tests.
-- **There is deliberately no migration** from the pre-OPFS
-  `webfs:filesystem` blob. A browser still holding one starts fresh from the
-  seed; the old key is simply left alone, neither read nor cleared. This was
-  an explicit call, not an oversight — don't add an import path back in.
-- **OPFS needs `createWritable`**, which not every browser with OPFS has. When
-  it's missing, `storage.ts` falls back to localStorage using the same
-  per-file key layout, so concurrency behaves identically and only the medium
-  and size limit change. `storageBackend()` reports which is live. **iOS
-  Safari support for `createWritable` has not been verified on a real device
-  — worth checking before assuming the OPFS path is what ships to phones.**
-- `bun test` covers `merge.ts` and `storage.ts` (through the localStorage
-  backend — OPFS can't run headless). The OPFS path, two-tab merging and
-  offline behavior were verified by driving real Chromium tabs; that isn't in
-  CI, so re-run it by hand after touching this area.
+  `undefined` means "not read yet", not "empty".
+- **Saves are debounced** (`WRITE_DEBOUNCE_MS`, 400ms) and flushed on
+  `pagehide`/hide. Best-effort: writes are async, so a page torn down
+  instantly can still lose the last few hundred ms.
+- **Structural changes re-read the whole tree** (`walk()` → `projectTree()` →
+  `adoptContent()`), rather than being patched in memory. `adoptContent`
+  preserves text this tab has already loaded. Walking is cheap at notes-app
+  scale and keeps OPFS unambiguously the source of truth.
+- **Cross-tab sync is a `BroadcastChannel`** (`webfs:changes`), announced only
+  after a write lands. File messages carry the path; receivers re-read and
+  reconcile through `merge.ts`.
+- **`merge.ts` is deliberately lossy.** Each side reduces to the one run of
+  lines it changed; both apply when they don't overlap, local wins when they
+  do. No real diff, no conflict markers. It is *stable* — merging a merged
+  result changes nothing — which is what stops two tabs ping-ponging writes.
+- **No migration, and no fallback store.** Nothing is imported from the old
+  `webfs:filesystem` blob. And because there's no second backend, a browser
+  with OPFS but without `createWritable` gets an explicit error screen rather
+  than silent degradation (`opfsAvailable()` gates the app). **This has not
+  been verified on real iOS Safari — if `createWritable` is missing there, the
+  app does not work on that device.** That's the known risk of the
+  single-store design; check `opfsAvailable()` on device before assuming.
+- `bun test` covers `merge.ts` and `tree.ts` (projection, id stability across
+  rename/move, name validation). OPFS itself can't run headless, so seeding,
+  rename, folder moves, two-tab merging and offline were verified by driving
+  real Chromium tabs — not in CI, so re-run by hand after touching this area.
 
 ## Deployment (GitHub Pages)
 

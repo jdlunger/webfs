@@ -1,43 +1,39 @@
 /**
- * Persistence for the file tree.
+ * A thin layer over OPFS. The directory tree *is* the filesystem — there is
+ * no index, no metadata file and no second store. Everything webfs persists
+ * is a name, a type, a position in the hierarchy or a file's text, and a
+ * directory tree expresses all four natively.
  *
- * Content lives in OPFS as one file per node (`files/<id>.md`) with the tree
- * structure alongside it in `tree.json`. Splitting them is the whole point of
- * moving off the single localStorage blob: a write touches only the file being
- * edited, so two tabs editing different files can't clobber each other, and a
- * corrupt file costs one note instead of the entire filesystem.
+ * Consequences worth knowing:
+ * - Node identity is the path. Ids exist only in memory (see tree.ts) and are
+ *   never written anywhere.
+ * - Two entries can't share a name within a folder, because the filesystem
+ *   won't allow it. `createFile`/`createDirectory` therefore return the name
+ *   actually used, which may be uniquified.
+ * - Nothing here can be lost to a stale index, and the store is
+ *   self-describing: whatever is on disk is exactly what the app shows.
  *
- * The layout is flat rather than mirroring the tree onto real OPFS
- * directories. Nodes are addressed by id, so rename and move stay pure
- * metadata edits — no file moves, no name-collision rules — and ids survive
- * both. `tree.json` is the only thing that knows about hierarchy.
- *
- * Locks are taken *only* around writes (see withWriteLock) and give up
- * quickly: reading never blocks, so a second tab can always open and display a
- * file that another tab happens to be saving.
- *
- * OPFS needs `createWritable`, which not every browser that supports OPFS has.
- * When it's missing this falls back to localStorage using the same per-file
- * key layout, so the concurrency story is identical and only the medium and
- * the size limit change.
+ * Locks are taken only around file writes, and give up quickly, so reading a
+ * file another tab is saving never blocks.
  */
-import { ROOT_ID, createSeedFileSystem, type FileSystem, type FSNode } from "./fs";
 
-const TREE_NAME = "tree.json";
-const FILES_DIR = "files";
-const LS_TREE_KEY = "webfs:tree";
-const LS_FILE_PREFIX = "webfs:file:";
-
-/**
- * How long a save waits for another tab's save of the same file. Short on
- * purpose: writes are debounced and retried, so giving up costs one round trip
- * rather than a lost edit, and a stuck lock can never freeze typing.
- */
-export const LOCK_TIMEOUT_MS = 750;
-
+export type Path = readonly string[];
 export type WriteResult = "ok" | "busy";
 
-function opfsUsable(): boolean {
+/** How long a save waits on another tab before deferring. */
+export const LOCK_TIMEOUT_MS = 750;
+
+/** Thrown when the browser can't back this app at all — see opfsAvailable. */
+export class StorageUnavailableError extends Error {}
+export class NameTakenError extends Error {}
+export class InvalidNameError extends Error {}
+
+/**
+ * OPFS alone isn't enough: writing needs `createWritable`, which some browsers
+ * with OPFS don't have (they expose only worker-side sync access handles).
+ * There's no fallback store by design, so this gates the whole app.
+ */
+export function opfsAvailable(): boolean {
   return (
     typeof navigator !== "undefined" &&
     typeof navigator.storage?.getDirectory === "function" &&
@@ -46,70 +42,97 @@ function opfsUsable(): boolean {
   );
 }
 
-let useOpfs: boolean | null = null;
-const opfsEnabled = () => (useOpfs ??= opfsUsable());
+// Everything else — spaces, colons, leading dots, non-ASCII — is a legal OPFS
+// filename and round-trips byte-identically, so names are stored as typed
+// rather than escaped into some encoding the user never sees.
+const RESERVED = new Set(["", ".", ".."]);
+export function isValidName(name: string): boolean {
+  return !RESERVED.has(name) && !name.includes("/") && !name.includes("\\");
+}
 
-/** Which backend is live — surfaced for tests and debugging, not for logic. */
-export const storageBackend = (): "opfs" | "localStorage" => (opfsEnabled() ? "opfs" : "localStorage");
+function requireValid(name: string): void {
+  if (!isValidName(name)) throw new InvalidNameError(name);
+}
 
-// --- raw reads/writes, no locking --------------------------------------------
+async function rootDir(): Promise<FileSystemDirectoryHandle> {
+  if (!opfsAvailable()) throw new StorageUnavailableError("OPFS with createWritable is unavailable");
+  return navigator.storage.getDirectory();
+}
 
-async function filesDir(create: boolean): Promise<FileSystemDirectoryHandle | null> {
+async function dirAt(path: Path, create = false): Promise<FileSystemDirectoryHandle> {
+  let dir = await rootDir();
+  for (const segment of path) dir = await dir.getDirectoryHandle(segment, { create });
+  return dir;
+}
+
+const parentOf = (path: Path) => path.slice(0, -1);
+const nameOf = (path: Path) => path[path.length - 1]!;
+
+async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
   try {
-    return await (await navigator.storage.getDirectory()).getDirectoryHandle(FILES_DIR, { create });
+    await dir.getFileHandle(name);
+    return true;
   } catch {
+    /* not a file */
+  }
+  try {
+    await dir.getDirectoryHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** "notes.md" taken → "notes 2.md". Keeps the extension where there is one. */
+async function uniqueName(dir: FileSystemDirectoryHandle, desired: string): Promise<string> {
+  if (!(await entryExists(dir, desired))) return desired;
+  const dot = desired.lastIndexOf(".");
+  const stem = dot > 0 ? desired.slice(0, dot) : desired;
+  const ext = dot > 0 ? desired.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const candidate = `${stem} ${n}${ext}`;
+    if (!(await entryExists(dir, candidate))) return candidate;
+  }
+}
+
+// --- reading -----------------------------------------------------------------
+
+export interface WalkEntry {
+  name: string;
+  kind: "file" | "directory";
+  children: WalkEntry[];
+}
+
+/** Reads the whole tree. Cheap for a notes app; the only index that exists. */
+export async function walk(path: Path = []): Promise<WalkEntry[]> {
+  const dir = await dirAt(path);
+  const entries: WalkEntry[] = [];
+  for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+    entries.push({
+      name,
+      kind: handle.kind,
+      children: handle.kind === "directory" ? await walk([...path, name]) : [],
+    });
+  }
+  return entries;
+}
+
+export async function readFile(path: Path): Promise<string | null> {
+  try {
+    const dir = await dirAt(parentOf(path));
+    return await (await (await dir.getFileHandle(nameOf(path))).getFile()).text();
+  } catch {
+    // Missing is a normal outcome — another tab may have deleted it.
     return null;
   }
 }
 
-async function readRaw(key: string, opfsName: string, dir: "root" | "files"): Promise<string | null> {
-  if (!opfsEnabled()) return localStorage.getItem(key);
-  try {
-    const handle = dir === "root" ? await navigator.storage.getDirectory() : await filesDir(false);
-    if (!handle) return null;
-    const file = await handle.getFileHandle(opfsName);
-    return await (await file.getFile()).text();
-  } catch {
-    // Missing file is the normal "nothing stored yet" path, not an error.
-    return null;
-  }
-}
-
-async function writeRaw(key: string, opfsName: string, dir: "root" | "files", text: string): Promise<void> {
-  if (!opfsEnabled()) {
-    localStorage.setItem(key, text);
-    return;
-  }
-  const handle = dir === "root" ? await navigator.storage.getDirectory() : await filesDir(true);
-  if (!handle) throw new Error("OPFS directory unavailable");
-  const file = await handle.getFileHandle(opfsName, { create: true });
-  const writable = await file.createWritable();
-  try {
-    await writable.write(text);
-  } finally {
-    // close() is what commits the swap file; skipping it on error would leak.
-    await writable.close();
-  }
-}
-
-async function removeRaw(key: string, opfsName: string): Promise<void> {
-  if (!opfsEnabled()) {
-    localStorage.removeItem(key);
-    return;
-  }
-  try {
-    await (await filesDir(false))?.removeEntry(opfsName);
-  } catch {
-    // Already gone.
-  }
-}
-
-// --- locking -----------------------------------------------------------------
+// --- writing -----------------------------------------------------------------
 
 /**
- * Runs `write` while holding a named lock, or returns "busy" if another tab
- * holds it past LOCK_TIMEOUT_MS. Only writes take locks; reads go straight
- * through so an open file is always viewable.
+ * Runs `write` holding a lock named for the file, or reports "busy" if another
+ * tab holds it past LOCK_TIMEOUT_MS. Aborting only cancels *waiting*; a
+ * granted lock always runs to completion, so this never reports a half-write.
  */
 async function withWriteLock(name: string, write: () => Promise<void>): Promise<WriteResult> {
   if (typeof navigator === "undefined" || !navigator.locks) {
@@ -124,8 +147,6 @@ async function withWriteLock(name: string, write: () => Promise<void>): Promise<
     });
     return "ok";
   } catch (err) {
-    // Aborting only ever cancels *waiting* for the lock; once granted the
-    // write runs to completion, so this can't report a half-finished write.
     if ((err as { name?: string } | null)?.name === "AbortError") return "busy";
     throw err;
   } finally {
@@ -133,80 +154,113 @@ async function withWriteLock(name: string, write: () => Promise<void>): Promise<
   }
 }
 
-// --- tree --------------------------------------------------------------------
-
-function stripContent(fs: FileSystem): FileSystem {
-  const out: FileSystem = {};
-  for (const node of Object.values(fs)) {
-    out[node.id] = { id: node.id, name: node.name, type: node.type, parentId: node.parentId };
-  }
-  return out;
+export function writeFile(path: Path, content: string): Promise<WriteResult> {
+  return withWriteLock(`webfs:${path.join("/")}`, async () => {
+    const dir = await dirAt(parentOf(path), true);
+    const handle = await dir.getFileHandle(nameOf(path), { create: true });
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(content);
+    } finally {
+      // close() is what commits the swap file.
+      await writable.close();
+    }
+  });
 }
 
-function parseTree(raw: string | null): FileSystem | null {
-  if (!raw) return null;
+export async function createFile(parent: Path, desired: string): Promise<string> {
+  requireValid(desired);
+  const dir = await dirAt(parent, true);
+  const name = await uniqueName(dir, desired);
+  const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  await writable.close();
+  return name;
+}
+
+export async function createDirectory(parent: Path, desired: string): Promise<string> {
+  requireValid(desired);
+  const dir = await dirAt(parent, true);
+  const name = await uniqueName(dir, desired);
+  await dir.getDirectoryHandle(name, { create: true });
+  return name;
+}
+
+export async function removeEntry(path: Path): Promise<void> {
+  const dir = await dirAt(parentOf(path));
+  await dir.removeEntry(nameOf(path), { recursive: true });
+}
+
+async function copyTree(from: FileSystemDirectoryHandle, name: string, to: FileSystemDirectoryHandle, as: string): Promise<void> {
+  let source: FileSystemDirectoryHandle;
   try {
-    const parsed = JSON.parse(raw) as FileSystem;
-    return parsed && parsed[ROOT_ID] ? parsed : null;
+    source = await from.getDirectoryHandle(name);
   } catch {
-    return null;
+    const file = await (await from.getFileHandle(name)).getFile();
+    const writable = await (await to.getFileHandle(as, { create: true })).createWritable();
+    try {
+      await writable.write(await file.text());
+    } finally {
+      await writable.close();
+    }
+    return;
+  }
+  const target = await to.getDirectoryHandle(as, { create: true });
+  for await (const [childName] of source as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+    await copyTree(source, childName, target, childName);
   }
 }
 
 /**
- * Loads the tree, seeding on first run. Nodes carry no content.
+ * Relocates an entry, optionally renaming it.
  *
- * There is deliberately no import path from the pre-OPFS `webfs:filesystem`
- * blob: anything stored under it is not carried over, and a browser holding
- * one simply starts fresh from the seed.
+ * Files use FileSystemFileHandle.move() where available. Directories have no
+ * move() at all, so they're copied and then deleted — deliberately in that
+ * order, so an interrupted move leaves the original intact (a duplicate is
+ * recoverable; a hole isn't).
  */
-export async function readTree(): Promise<FileSystem> {
-  const existing = parseTree(await readRaw(LS_TREE_KEY, TREE_NAME, "root"));
-  if (existing) return existing;
+async function relocate(path: Path, newParent: Path, newName: string): Promise<void> {
+  requireValid(newName);
+  const fromDir = await dirAt(parentOf(path));
+  const toDir = await dirAt(newParent, true);
+  const name = nameOf(path);
+  if (parentOf(path).join("/") === newParent.join("/") && name === newName) return;
+  if (await entryExists(toDir, newName)) throw new NameTakenError(newName);
 
-  const seeded = createSeedFileSystem();
-  for (const node of Object.values(seeded)) {
-    if (node.type === "file") await writeRaw(LS_FILE_PREFIX + node.id, `${node.id}.md`, "files", node.content ?? "");
+  try {
+    const file = await fromDir.getFileHandle(name);
+    if ("move" in file) {
+      await (file as FileSystemFileHandle & { move: (a: unknown, b?: string) => Promise<void> }).move(toDir, newName);
+      return;
+    }
+  } catch (err) {
+    if (err instanceof NameTakenError) throw err;
+    // Not a file, or no move() — fall through to copy + delete.
   }
-  await writeRaw(LS_TREE_KEY, TREE_NAME, "root", JSON.stringify(stripContent(seeded)));
-  return stripContent(seeded);
+  await copyTree(fromDir, name, toDir, newName);
+  await fromDir.removeEntry(name, { recursive: true });
 }
 
-export function writeTree(fs: FileSystem): Promise<WriteResult> {
-  const payload = JSON.stringify(stripContent(fs));
-  return withWriteLock("webfs:tree", () => writeRaw(LS_TREE_KEY, TREE_NAME, "root", payload));
+export function renameEntry(path: Path, newName: string): Promise<void> {
+  return relocate(path, parentOf(path), newName);
 }
 
-// --- file content ------------------------------------------------------------
-
-export function readFileContent(id: string): Promise<string | null> {
-  return readRaw(LS_FILE_PREFIX + id, `${id}.md`, "files");
-}
-
-export function writeFileContent(id: string, content: string): Promise<WriteResult> {
-  return withWriteLock(`webfs:file:${id}`, () => writeRaw(LS_FILE_PREFIX + id, `${id}.md`, "files", content));
-}
-
-export async function deleteFileContents(nodes: FSNode[]): Promise<void> {
-  for (const node of nodes) {
-    if (node.type === "file") await removeRaw(LS_FILE_PREFIX + node.id, `${node.id}.md`);
-  }
+export function moveEntry(path: Path, newParent: Path): Promise<void> {
+  return relocate(path, newParent, nameOf(path));
 }
 
 // --- cross-tab notification --------------------------------------------------
 
-export type ChangeMessage = { kind: "tree" } | { kind: "file"; id: string };
+export type ChangeMessage = { kind: "tree" } | { kind: "file"; path: string[] };
 
-const CHANNEL_NAME = "webfs:changes";
 const tabId = Math.random().toString(36).slice(2);
-
 let channel: BroadcastChannel | null | undefined;
+
 function getChannel(): BroadcastChannel | null {
-  if (channel === undefined) channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(CHANNEL_NAME);
+  if (channel === undefined) channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("webfs:changes");
   return channel;
 }
 
-/** Tells other tabs something landed on disk. Call only after a write succeeds. */
+/** Announce only after a write lands, never before. */
 export function announce(message: ChangeMessage): void {
   getChannel()?.postMessage({ ...message, from: tabId });
 }
