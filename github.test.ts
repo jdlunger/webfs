@@ -96,24 +96,84 @@ test("a repository with no commits at all syncs as an empty tree", async () => {
   expect(tree).toEqual({ commitSha: null, entries: [] });
 });
 
-test("an empty repository gets a first commit rather than an error", async () => {
-  const calls = stubFetch({
+// An empty repository cannot be written to with the git-object endpoints at
+// all. They 409 while there is no history, and GitHub refuses ref creation
+// outright: "You are unable to create new references for empty repositories,
+// even if the commit SHA-1 hash used exists." So this fake refuses both, and
+// only the Contents API works — exactly as the real thing behaves.
+function stubEmptyRepo(extra: Record<string, unknown> = {}) {
+  return stubFetch({
     "GET /repos/someone/notes": { default_branch: "main" },
     "GET /repos/someone/notes/git/ref/heads/main": 409,
-    "POST /repos/someone/notes/git/blobs": { sha: "blob" },
-    "POST /repos/someone/notes/git/trees": { sha: "tree" },
-    "POST /repos/someone/notes/git/commits": { sha: "commit" },
-    "POST /repos/someone/notes/git/refs": { ref: "refs/heads/main" },
+    "POST /repos/someone/notes/git/blobs": 409,
+    "POST /repos/someone/notes/git/trees": 409,
+    "POST /repos/someone/notes/git/commits": 409,
+    "POST /repos/someone/notes/git/refs": 422,
+    ...extra,
+  });
+}
+
+test("an empty repository is started through the Contents API, not git objects", async () => {
+  const calls = stubEmptyRepo({
+    "PUT /repos/someone/notes/contents/Notes/welcome.md": { commit: { sha: "firstcommit" } },
   });
 
   const remote = new GitHubRemote(credentials);
   const tree = await remote.readTree();
-  await remote.commit([{ path: "a.md", mode: "100644", content: "hi" }], "webfs sync", tree.commitSha);
+  expect(tree.commitSha).toBeNull();
 
-  expect(calls.find(c => c.path.endsWith("/git/commits"))!.body.parents).toEqual([]);
-  // The branch has to be created, not updated — there's no ref to patch.
-  expect(calls.find(c => c.path.endsWith("/git/refs"))!.body).toEqual({ ref: "refs/heads/main", sha: "commit" });
-  expect(calls.some(c => c.method === "PATCH")).toBe(false);
+  const sha = await remote.commit(
+    [{ path: "Notes/welcome.md", mode: "100644", content: "# hi" }],
+    "webfs sync",
+    tree.commitSha,
+  );
+
+  expect(sha).toBe("firstcommit");
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(Buffer.from(put.body.content, "base64").toString()).toBe("# hi");
+  expect(put.body.branch).toBe("main");
+  // A single file is the whole tree, so nothing else is needed.
+  expect(calls.some(c => c.path.endsWith("/git/trees"))).toBe(false);
+  expect(calls.some(c => c.path.endsWith("/git/refs"))).toBe(false);
+});
+
+test("the rest of an empty repository's files follow as a normal commit", async () => {
+  const calls = stubEmptyRepo({
+    "PUT /repos/someone/notes/contents/a.md": { commit: { sha: "firstcommit" } },
+    // Reachable only once the repo has a commit, which is the point.
+    "POST /repos/someone/notes/git/blobs": { sha: "blob" },
+    "POST /repos/someone/notes/git/trees": { sha: "tree" },
+    "POST /repos/someone/notes/git/commits": { sha: "secondcommit" },
+    "PATCH /repos/someone/notes/git/refs/heads/main": { object: { sha: "secondcommit" } },
+  });
+
+  const remote = new GitHubRemote(credentials);
+  const tree = await remote.readTree();
+  const sha = await remote.commit(
+    [
+      { path: "a.md", mode: "100644", content: "one" },
+      { path: "b.md", mode: "100644", content: "two" },
+    ],
+    "webfs sync",
+    tree.commitSha,
+  );
+
+  expect(sha).toBe("secondcommit");
+  // Parented on the bootstrap commit, not parentless: the branch now exists.
+  expect(calls.find(c => c.path.endsWith("/git/commits"))!.body.parents).toEqual(["firstcommit"]);
+  // And updated, never created — creating a ref is what GitHub refuses here.
+  expect(calls.some(c => c.method === "PATCH")).toBe(true);
+  expect(calls.some(c => c.path.endsWith("/git/refs") && c.method === "POST")).toBe(false);
+});
+
+test("a file path's directories survive encoding into the Contents URL", async () => {
+  const calls = stubEmptyRepo({
+    "PUT /repos/someone/notes/contents/My%20Notes/caf%C3%A9.md": { commit: { sha: "c" } },
+  });
+  const remote = new GitHubRemote(credentials);
+  await remote.commit([{ path: "My Notes/café.md", mode: "100644", content: "x" }], "webfs sync", (await remote.readTree()).commitSha);
+  // The slash stays a separator; everything else is percent-encoded.
+  expect(calls.find(c => c.method === "PUT")!.path).toBe("/repos/someone/notes/contents/My%20Notes/caf%C3%A9.md");
 });
 
 test("a truncated tree is refused rather than half-synced", async () => {
@@ -181,24 +241,6 @@ test("a push creates blobs for new text only, then one tree, commit and ref upda
   // force stays false so a branch that moved underneath us fails loudly
   // rather than losing the other writer's commit.
   expect(ref.body).toEqual({ sha: "newcommit", force: false });
-});
-
-test("the first commit to an empty repo has no parent and creates the ref", async () => {
-  const calls = stubFetch({
-    "GET /repos/someone/notes": { default_branch: "main" },
-    "POST /repos/someone/notes/git/blobs": { sha: "blob" },
-    "POST /repos/someone/notes/git/trees": { sha: "tree" },
-    "POST /repos/someone/notes/git/commits": { sha: "commit" },
-    "POST /repos/someone/notes/git/refs": { ref: "refs/heads/main" },
-  });
-
-  const remote = new GitHubRemote(credentials);
-  await remote.readTree();
-  await remote.commit([{ path: "a.md", mode: "100644", content: "hi" }], "webfs sync", null);
-
-  expect(calls.find(c => c.path.endsWith("/git/commits"))!.body.parents).toEqual([]);
-  // POST /git/refs, not PATCH: the branch doesn't exist to update.
-  expect(calls.find(c => c.path.endsWith("/git/refs"))!.body).toEqual({ ref: "refs/heads/main", sha: "commit" });
 });
 
 test("pushing nothing is refused: an empty tree would wipe the branch", () => {

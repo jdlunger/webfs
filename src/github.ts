@@ -177,9 +177,10 @@ export class GitHubRemote implements Remote {
   }
 
   private refPath(branch: string): string {
-    // Not encodeURIComponent: a branch name's own slashes are path separators
-    // here ("refs/heads/feature/x"), and encoding them 404s the ref.
-    return `${this.repoPath}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`;
+    // Not encodeURIComponent on the whole string: a branch name's own slashes
+    // are path separators here ("refs/heads/feature/x"), and encoding them
+    // 404s the ref. Same for a file path's directory separators.
+    return `${this.repoPath}/git/ref/heads/${encodePath(branch)}`;
   }
 
   /** Confirms the token can see the repo, and reports its default branch. */
@@ -255,6 +256,20 @@ export class GitHubRemote implements Remote {
     // store should mean. sync.ts refuses before getting here, too.
     if (entries.length === 0) throw new GitHubError("Refusing to push an empty tree.", 0);
 
+    // No parent means a repository with no commits, and none of the code
+    // below can touch one: the git-object endpoints 409 while there is no
+    // history, and creating the branch afterwards is refused outright —
+    // "You are unable to create new references for empty repositories, even
+    // if the commit SHA-1 hash used exists." The Contents API is the one
+    // endpoint that works on an empty repo, and a single call to it makes
+    // the first branch and commit, after which all of this behaves normally.
+    let base = parent;
+    if (base === null) {
+      base = await this.initializeRepository(entries, message);
+      // One file and we're already done — the bootstrap wrote the whole tree.
+      if (entries.length === 1) return base;
+    }
+
     const tree = await Promise.all(
       entries.map(async entry => ({
         path: entry.path,
@@ -271,7 +286,7 @@ export class GitHubRemote implements Remote {
     };
     const commit = (await this.request(`${this.repoPath}/git/commits`, {
       method: "POST",
-      body: { message, tree: created.sha, parents: parent === null ? [] : [parent] },
+      body: { message, tree: created.sha, parents: [base] },
     })) as { sha: string };
 
     const ref = `refs/heads/${this.credentials.branch}`;
@@ -287,6 +302,39 @@ export class GitHubRemote implements Remote {
     return commit.sha;
   }
 
+  /**
+   * Gives an empty repository its first commit, via the only endpoint that
+   * works on one, and returns that commit's sha to parent the real push on.
+   *
+   * It writes a single file — whichever the push was going to send anyway —
+   * so nothing extra is invented and the full tree that follows simply
+   * supersedes it. That does cost two commits on a first sync, which is the
+   * price of the repository having had no branch to begin with.
+   */
+  private async initializeRepository(entries: CommitEntry[], message: string): Promise<string> {
+    const seed = entries.find(entry => "content" in entry);
+    if (seed === undefined || !("content" in seed)) {
+      // Everything referenced an existing blob, which can't happen when the
+      // repository is empty — there is nothing there to reference.
+      throw new GitHubError("Can't start an empty repository without a file's text to write.", 0);
+    }
+
+    const created = (await this.request(`${this.repoPath}/contents/${encodePath(seed.path)}`, {
+      method: "PUT",
+      body: {
+        message,
+        content: toBase64(new TextEncoder().encode(seed.content)),
+        branch: this.credentials.branch,
+      },
+    })) as { commit?: { sha?: string } };
+
+    const sha = created.commit?.sha;
+    if (typeof sha !== "string") throw new GitHubError("GitHub didn't report a commit for the first file.", 0);
+    // The branch exists now, so the ref gets updated rather than created.
+    this.branchExists = true;
+    return sha;
+  }
+
   private async createBlob(content: string): Promise<string> {
     const blob = (await this.request(`${this.repoPath}/git/blobs`, {
       method: "POST",
@@ -295,6 +343,9 @@ export class GitHubRemote implements Remote {
     return blob.sha;
   }
 }
+
+/** Percent-encodes each segment, leaving the separators as separators. */
+const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
 /** Turns a failed response into something worth showing a user. */
 async function describeFailure(response: Response): Promise<string> {

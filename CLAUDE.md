@@ -208,8 +208,18 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   retries the whole pass once, which re-reads everything.
 - **A branch that doesn't exist is forked from the default branch**, so
   pointing webfs at a new branch of an existing repo starts from that repo's
-  files rather than orphaning them. A repo with no commits at all gets an
-  initial commit with no parents.
+  files rather than orphaning them.
+- **An empty repository can't be written to with the git-object endpoints at
+  all**, so `commit()` starts one through the Contents API
+  (`PUT /contents/{path}`) and parents the real push on what that returns.
+  Blobs, trees and commits all 409 while a repo has no history, and GitHub
+  refuses the last step outright — "You are unable to create new references
+  for empty repositories, even if the commit SHA-1 hash used exists." There
+  is no arrangement of the git-object calls that works; the Contents API is
+  the only endpoint that does, and one call to it creates the first branch
+  and commit. It writes a file the push was sending anyway, so the full tree
+  that follows simply supersedes it — at the cost of two commits on a first
+  sync, unless there is only one file, which is handled by returning early.
 - **"No head" arrives as either a 404 or a 409, and the difference isn't the
   branch.** A missing branch in a repository that has commits is a 404; a
   repository with *no commits at all* answers 409 on its git endpoints, since
@@ -218,7 +228,9 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   is — create a repo, point webfs at it — fail outright with nothing synced.
   Worth knowing that `github.test.ts` faked that case as a 404 and passed
   while the real path was broken; it now uses the status GitHub actually
-  sends.
+  sends. The empty-repo fakes — in that file and in the browser run — refuse
+  everything the real API refuses, which is the only reason the second half
+  of this bug (the write path) was caught rather than shipped again.
 - **GitHub's own message is always appended to a failure.** The canned
   summaries are ours and they get stale; `message` is GitHub's and it is the
   only thing that identifies an unexpected failure. The 409 above reached a
