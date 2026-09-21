@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./index.css";
-import { type FileSystem, canMove, findFirstFile, findNodeByPath, getNodePath, idOf, segmentsOf, updateFileContent } from "./fs";
+import {
+  type FileSystem,
+  canMove,
+  findFirstFile,
+  findNodeByPath,
+  getNodePath,
+  idOf,
+  markFileBinary,
+  segmentsOf,
+  updateFileContent,
+} from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
 import { BASE_PATH } from "./basePath";
+import { decodeText } from "./github";
 import { mergeText } from "./merge";
 import {
   InvalidNameError,
@@ -13,6 +24,7 @@ import {
   createFile,
   moveEntry,
   opfsAvailable,
+  readBytes,
   readFile,
   removeEntry,
   renameEntry,
@@ -177,6 +189,10 @@ export function App() {
   const applySyncResult = useCallback(
     (result: SyncResult) => {
       for (const { path, content } of result.written) {
+        // A file that isn't text — an image pasted on another device — has
+        // nothing for the editor to show. The tree refresh below is all it
+        // needs; the bytes are already on disk.
+        if (content === null) continue;
         const id = idOf(path.split("/"));
         const mine = fsRef.current?.[id]?.content;
         // A sync reads OPFS at the start and writes it seconds later, so
@@ -246,9 +262,15 @@ export function App() {
 
     let cancelled = false;
     const segments = segmentsOf(selectedId);
-    void readFile(segments).then(stored => {
+    // Bytes, then decode: reading an image as text would hand the editor
+    // U+FFFD soup, which its first save would write back over the original.
+    void readBytes(segments).then(stored => {
       if (cancelled) return;
-      const content = stored ?? "";
+      const content = stored === null ? "" : decodeText(stored);
+      if (content === null) {
+        setFs(prev => (prev ? markFileBinary(prev, selectedId) : prev));
+        return;
+      }
       baseContent.current.set(selectedId, content);
       setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
     });
@@ -273,6 +295,7 @@ export function App() {
 
         void readFile(message.path).then(stored => {
           const theirs = stored ?? "";
+          // Only text files are reconciled here; a binary one has no merge.
           const mine = fsRef.current?.[id]?.content;
           if (mine === undefined) return;
 
@@ -363,6 +386,18 @@ export function App() {
     });
   };
 
+  /**
+   * A pasted image was written straight to OPFS by the editor, bypassing
+   * `mutate` — so the tree, the other tabs and the next sync all have to be
+   * told, exactly as a structural change would tell them.
+   */
+  const handleAssetAdded = useCallback(() => {
+    void refreshTree().then(() => {
+      announce({ kind: "tree" });
+      requestSync.current();
+    });
+  }, [refreshTree]);
+
   const handleContentChange = (content: string) => {
     if (!selectedId) return;
     setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
@@ -408,7 +443,12 @@ export function App() {
         onMove={handleMove}
         footer={<SyncPanel sync={sync} />}
       />
-      <Editor file={selectedFile} externalEdit={externalEdit} onChange={handleContentChange} />
+      <Editor
+        file={selectedFile}
+        externalEdit={externalEdit}
+        onChange={handleContentChange}
+        onAssetAdded={handleAssetAdded}
+      />
     </div>
   );
 }

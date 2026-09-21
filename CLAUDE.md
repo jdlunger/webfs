@@ -196,10 +196,15 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   submodules) are carried through verbatim — without that, the push would
   delete them. Blobs already present remotely are referenced by sha, so only
   genuinely new text is uploaded.
-- **Non-text files are never touched.** A blob that isn't valid UTF-8 (or
-  holds a NUL) is reported as untouchable by `decodeText` rather than decoded
-  leniently, because U+FFFD replacements would be written back on the next
-  push. They're carried, not pulled, and reported as skipped.
+- **Bytes are the medium; text is a view.** `LocalFs` and the push/pull path
+  deal in `Bytes` (`Uint8Array<ArrayBuffer>`, named in `storage.ts` because
+  the DOM rejects the default `ArrayBufferLike`), and `decodeText` is applied
+  only where text is actually required — the three-way merge, and the content
+  the editor shows. Decoding anywhere else would turn an image into U+FFFD
+  soup and push the damage. Two consequences: a binary file changed on both
+  sides takes the keep-both route rather than being merged (two versions of a
+  photo have no middle ground), and `SyncResult.written` carries
+  `content: null` for a file that isn't text.
 - **The git-object endpoints, not `/contents`.** Sync needs the whole tree in
   one request to diff it, and needs a set of changes to land as one commit;
   `/contents` is a request per file and a commit per file.
@@ -250,6 +255,10 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   there's no way around it for a backend-less app: no server, so no session
   cookie to hide behind and no OAuth secret that could stay secret. The
   settings dialog says so.
+- **The repo name in the strip is a link to the branch on GitHub**
+  (`branchUrl`), pointing at `/tree/<branch>` rather than the repo root so it
+  lands on what's actually being synced. Settings moved to their own `⚙`
+  button when the name became a link — the name now leads where it says.
 - **The dialog links to a pre-filled token page** (`tokenSetupUrl` in
   `SyncPanel.tsx`). GitHub's fine-grained token form takes a template URL, so
   `contents=write` (which implies read; GitHub adds `metadata:read` itself),
@@ -304,6 +313,42 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   remote edit re-rendering in the open editor, a two-sided edit merging,
   deletions propagating, a second device converging, and a wiped device
   refilling. Re-run that by hand after touching this area.
+
+## Images pasted into a note
+
+`assets.ts` (path arithmetic), `Editor.tsx` (the Crepe hooks).
+
+- **Crepe's default loses the image.** Left alone it keeps the pasted `File`
+  in memory behind a `blob:` URL and writes that into the markdown. That URL
+  dies with the document — verified: after a reload the `<img>` still *looks*
+  loaded, which is Chromium's in-memory image cache, but `fetch()` on the URL
+  fails, and in a new tab it fails too. The note ends up linking to nothing,
+  and GitHub never had a chance of seeing it.
+- **So a pasted image becomes a real file**, written to `<note's folder>/assets/`
+  by `onUpload`/`blockOnUpload`/`inlineOnUpload`, with the markdown holding a
+  *relative* link (`assets/screen%20shot.png`). That is deliberately the same
+  string GitHub resolves when it renders the note, which is what makes one
+  link work in both places. The name is percent-encoded, because a space
+  would otherwise end the URL as far as markdown is concerned.
+- **`proxyDomURL` is what makes it visible here.** The browser can't fetch
+  OPFS, so the stored relative path is resolved against the note's folder,
+  read as bytes, and handed to the DOM as an object URL — revoked when the
+  editor unmounts. Absolute URLs (`http:`, `data:`, `blob:`, `/…`) are passed
+  through untouched, so pasted *links* keep working exactly as before.
+- **`data:` URIs were never an option.** GitHub's markdown sanitizer strips
+  them, so inlining base64 would look right here and stay broken there — and
+  it would bloat every note containing a photo.
+- **A file that isn't text is shown, not opened.** Crepe would render the
+  bytes as text and write that reading back on the first keystroke, so an
+  image opened from the sidebar would be destroyed by looking at it.
+  `FSNode.binary` is set when a read fails to decode, and `Editor` renders a
+  preview instead. This is why `App.tsx` reads the selected file with
+  `readBytes` + `decodeText` rather than `readFile`.
+- **`resolveAssetPath` refuses to leave the store**, so a link with enough
+  `..` in it resolves to null rather than to something outside. It also
+  requires the link to name something: without that, an empty link resolved
+  to the note's own folder, which is a directory. `assets.test.ts` covers
+  both, which is how the second one was found.
 
 ## Deployment (GitHub Pages)
 

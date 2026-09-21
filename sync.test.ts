@@ -11,6 +11,10 @@
 import { test, expect } from "bun:test";
 import { commitTitle, conflictCopyPath, planSync, syncOnce, type LocalFs, type ShaMap, type SyncState } from "./src/sync";
 import { decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteTree } from "./src/github";
+import type { Bytes } from "./src/storage";
+
+const enc = (text: string): Bytes => new TextEncoder().encode(text);
+const dec = (bytes: Bytes) => new TextDecoder().decode(bytes);
 
 // --- git blob hashing --------------------------------------------------------
 
@@ -83,45 +87,62 @@ test("a conflict copy sidesteps names already in use", () => {
 // --- a full pass -------------------------------------------------------------
 
 /** An in-memory store standing in for OPFS. */
-function fakeLocal(files: Record<string, string>): LocalFs & { files: Record<string, string> } {
-  // Reads go through `store.files`, not the argument, so a test can replace
-  // the whole store (as an evicted OPFS would).
-  const store: LocalFs & { files: Record<string, string> } = {
+/**
+ * An in-memory store. It holds text for readability, and converts at the
+ * edges — the interface deals in bytes, which is what the real store does.
+ * `bytes` is for the cases that are genuinely about binary.
+ */
+function fakeLocal(files: Record<string, string>, bytes: Record<string, Bytes> = {}) {
+  const store = {
     files,
-    read: async () => ({ ...store.files }),
-    write: async (path, content) => {
-      store.files[path] = content;
+    bytes,
+    read: async () => {
+      const out: Record<string, Bytes> = { ...store.bytes };
+      for (const [path, text] of Object.entries(store.files)) out[path] = enc(text);
+      return out;
     },
-    remove: async path => {
+    write: async (path: string, content: Bytes) => {
+      const text = decodeText(content);
+      if (text === null) store.bytes[path] = content;
+      else store.files[path] = text;
+    },
+    remove: async (path: string) => {
       delete store.files[path];
+      delete store.bytes[path];
     },
   };
-  return store;
+  return store satisfies LocalFs & { files: Record<string, string>; bytes: Record<string, Bytes> };
 }
 
 /** An in-memory branch standing in for a repository. */
 class FakeRemote implements Remote {
-  readonly blobs = new Map<string, string>();
+  readonly blobs = new Map<string, Bytes>();
   files: Record<string, string>;
   commitSha: string | null;
-  commits: Array<{ message: string; parent: string | null; files: Record<string, string> }> = [];
-  /** Paths whose blob should read back as binary. */
-  binary = new Set<string>();
+  commits: Array<{ message: string; parent: string | null; files: Record<string, Bytes> }> = [];
 
   constructor(files: Record<string, string> = {}, commitSha: string | null = files ? "commit0" : null) {
     this.files = files;
     this.commitSha = Object.keys(files).length === 0 ? commitSha : commitSha;
   }
 
+  /** Everything the branch holds, as bytes — text files included. */
+  private all(): Record<string, Bytes> {
+    return { ...this.rawFiles, ...Object.fromEntries(Object.entries(this.files).map(([p, t]) => [p, enc(t)])) };
+  }
+
+  /** Non-text files on the branch, kept as bytes. */
+  rawFiles: Record<string, Bytes> = {};
+
   async tree(): Promise<ShaMap> {
     const out: ShaMap = {};
-    for (const [path, content] of Object.entries(this.files)) out[path] = await gitBlobSha(content);
+    for (const [path, content] of Object.entries(this.all())) out[path] = await gitBlobSha(content);
     return out;
   }
 
   async readTree(): Promise<RemoteTree> {
     const entries = await Promise.all(
-      Object.entries(this.files).map(async ([path, content]) => {
+      Object.entries(this.all()).map(async ([path, content]) => {
         const sha = await gitBlobSha(content);
         this.blobs.set(sha, content);
         return { path, mode: "100644", type: "blob", sha };
@@ -130,26 +151,34 @@ class FakeRemote implements Remote {
     return { commitSha: this.commitSha, entries };
   }
 
-  async readBlobText(sha: string): Promise<string | null> {
+  async readBlobBytes(sha: string): Promise<Bytes> {
     const content = this.blobs.get(sha);
     if (content === undefined) throw new Error(`no such blob ${sha}`);
-    for (const path of this.binary) {
-      if (this.files[path] === content) return null;
-    }
     return content;
+  }
+
+  async readBlobText(sha: string): Promise<string | null> {
+    return decodeText(await this.readBlobBytes(sha));
   }
 
   async commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string> {
     const files: Record<string, string> = {};
+    const raw: Record<string, Bytes> = {};
+    const snapshot: Record<string, Bytes> = {};
     for (const entry of entries) {
       const content = "content" in entry ? entry.content : this.blobs.get(entry.sha);
       if (content === undefined) throw new Error(`commit referenced an unknown blob: ${entry.path}`);
-      files[entry.path] = content;
-      this.blobs.set(await gitBlobSha(content), content);
+      const bytes = typeof content === "string" ? enc(content) : content;
+      const text = decodeText(bytes);
+      if (text === null) raw[entry.path] = bytes;
+      else files[entry.path] = text;
+      snapshot[entry.path] = bytes;
+      this.blobs.set(await gitBlobSha(bytes), bytes);
     }
     this.files = files;
+    this.rawFiles = raw;
     this.commitSha = `commit${this.commits.length + 1}`;
-    this.commits.push({ message, parent, files: { ...files } });
+    this.commits.push({ message, parent, files: { ...snapshot } });
     return this.commitSha;
   }
 }
@@ -251,17 +280,75 @@ test("a file deleted on GitHub but edited here comes back rather than vanishing"
   expect(remote.files["a.md"]).toBe("edited while offline");
 });
 
-test("non-text files are left untouched on both sides, not pulled or corrupted", async () => {
-  const local = fakeLocal({ "a.md": "text" });
-  const remote = new FakeRemote({ "a.md": "text", "logo.png": "\u0000binary-ish" });
-  remote.binary.add("logo.png");
+// A pasted image is a real file in the store now, so it has to survive the
+// round trip byte for byte — decoding it as text anywhere would replace bytes
+// with U+FFFD and push the damage back.
+const PNG: Bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0xfe, 0xff]);
+
+test("a binary file is pushed byte for byte, not mangled into text", async () => {
+  const local = fakeLocal({ "note.md": "see below" }, { "assets/shot.png": PNG });
+  const remote = new FakeRemote({});
+
+  await syncOnce(local, remote, EMPTY);
+
+  expect([...remote.rawFiles["assets/shot.png"]!]).toEqual([...PNG]);
+  expect(await gitBlobSha(remote.rawFiles["assets/shot.png"]!)).toBe(await gitBlobSha(PNG));
+});
+
+test("a binary file added on GitHub is pulled byte for byte", async () => {
+  const local = fakeLocal({ "note.md": "text" });
+  const remote = new FakeRemote({ "note.md": "text" });
+  remote.rawFiles["assets/shot.png"] = PNG;
 
   const result = await syncOnce(local, remote, EMPTY);
 
-  expect(local.files["logo.png"]).toBeUndefined();
-  expect(remote.files["logo.png"]).toBe("\u0000binary-ish");
-  expect(result.summary.skipped).toEqual(["logo.png"]);
-  expect(result.state.files["logo.png"]).toBeUndefined();
+  expect([...local.bytes["assets/shot.png"]!]).toEqual([...PNG]);
+  // Nothing for the editor to show, but the tree still has to be re-read.
+  expect(result.written.find(w => w.path === "assets/shot.png")!.content).toBeNull();
+});
+
+test("an unchanged binary file doesn't churn on the next sync", async () => {
+  const local = fakeLocal({ "note.md": "text" }, { "assets/shot.png": PNG });
+  const remote = new FakeRemote({});
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  const before = remote.commits.length;
+  await syncOnce(local, remote, base);
+
+  expect(remote.commits.length).toBe(before);
+});
+
+test("a binary file changed on both sides keeps both rather than merging", async () => {
+  const local = fakeLocal({ "note.md": "text" }, { "shot.png": PNG });
+  const remote = new FakeRemote({ "note.md": "text" });
+  remote.rawFiles["shot.png"] = PNG;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  // Two different edits of the same image: there is no middle ground, and
+  // picking a side would lose the other outright.
+  local.bytes["shot.png"] = new Uint8Array([...PNG, 0x01]) as Bytes;
+  remote.rawFiles["shot.png"] = new Uint8Array([...PNG, 0x02]) as Bytes;
+
+  const result = await syncOnce(local, remote, base);
+
+  expect(result.summary.conflicted).toEqual([{ path: "shot.png", keptAs: "shot (github).png" }]);
+  expect([...local.bytes["shot.png"]!]).toEqual([...PNG, 0x01]);
+  expect([...local.bytes["shot (github).png"]!]).toEqual([...PNG, 0x02]);
+});
+
+test("text files still merge normally alongside binary ones", async () => {
+  const local = fakeLocal({ "note.md": "intro\nbody" }, { "shot.png": PNG });
+  const remote = new FakeRemote({ "note.md": "intro\nbody" });
+  remote.rawFiles["shot.png"] = PNG;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  local.files["note.md"] = "intro edited\nbody";
+  remote.files["note.md"] = "intro\nbody\nappended";
+
+  const result = await syncOnce(local, remote, base);
+
+  expect(result.summary.merged).toEqual(["note.md"]);
+  expect(local.files["note.md"]).toBe("intro edited\nbody\nappended");
 });
 
 test("a store that lost its data refills from the repo instead of emptying it", async () => {
@@ -286,8 +373,8 @@ test("entries webfs can't represent survive a push that rewrites the tree", asyn
   const local = fakeLocal({ "a.md": "text" });
   const remote = new FakeRemote({ "a.md": "text" });
   // A submodule: not a blob, and nothing webfs could store even if it were.
-  remote.blobs.set("deadbeef", "<a submodule pointer>");
-  remote.blobs.set(await gitBlobSha("text"), "text");
+  remote.blobs.set("deadbeef", enc("<a submodule pointer>"));
+  remote.blobs.set(await gitBlobSha("text"), enc("text"));
   remote.readTree = async () => ({
     commitSha: "commit0",
     entries: [
@@ -301,8 +388,8 @@ test("entries webfs can't represent survive a push that rewrites the tree", asyn
 
   // The push sends the complete tree, so anything not carried over would be
   // silently deleted from the repository.
-  expect(remote.commits[0]!.files["vendor/lib"]).toBe("<a submodule pointer>");
-  expect(remote.commits[0]!.files["b.md"]).toBe("new file");
+  expect(dec(remote.commits[0]!.files["vendor/lib"]!)).toBe("<a submodule pointer>");
+  expect(dec(remote.commits[0]!.files["b.md"]!)).toBe("new file");
 });
 
 // --- commit titles ----------------------------------------------------------

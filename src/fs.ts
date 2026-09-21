@@ -24,6 +24,12 @@ export interface FSNode {
    * opened, so `undefined` on a file means "not read yet", not "empty".
    */
   content?: string;
+  /**
+   * Set once the file has been read and turned out not to be text. The editor
+   * shows it rather than opening it — rendering bytes as text and saving that
+   * back would destroy the file.
+   */
+  binary?: boolean;
 }
 
 export type FileSystem = Record<string, FSNode>;
@@ -56,7 +62,14 @@ export function childrenOf(fs: FileSystem, parentId: string): FSNode[] {
 export function updateFileContent(fs: FileSystem, id: string, content: string): FileSystem {
   const node = fs[id];
   if (!node || node.type !== "file") return fs;
-  return { ...fs, [id]: { ...node, content } };
+  return { ...fs, [id]: { ...node, content, binary: false } };
+}
+
+/** Records that a file's bytes aren't text, so the editor won't open it. */
+export function markFileBinary(fs: FileSystem, id: string): FileSystem {
+  const node = fs[id];
+  if (!node || node.type !== "file") return fs;
+  return { ...fs, [id]: { ...node, binary: true } };
 }
 
 /**

@@ -367,6 +367,30 @@ body {
   }
 }
 
+/* Shown in place of the editor for a file that isn't text. */
+.binary-file {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  overflow: auto;
+  color: #777;
+  font-size: 13px;
+  text-align: center;
+}
+
+.binary-file img {
+  max-width: 100%;
+  max-height: 70%;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #101010;
+}
+
 /* --- GitHub sync ---------------------------------------------------------- */
 
 .sync-bar {
@@ -388,6 +412,23 @@ body {
   gap: 1px;
 }
 
+.sync-settings {
+  background: #2a2a2a;
+  color: #ccc;
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sync-settings:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
 .sync-repo {
   display: flex;
   align-items: baseline;
@@ -407,6 +448,7 @@ body {
 
 .sync-repo:hover {
   color: #fff;
+  text-decoration: underline;
 }
 
 .sync-branch {
@@ -631,7 +673,8 @@ body {
     font-size: 12px;
   }
 
-  .sync-now {
+  .sync-now,
+  .sync-settings {
     width: 44px;
     height: 44px;
     font-size: 18px;

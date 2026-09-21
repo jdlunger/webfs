@@ -12,6 +12,8 @@
  * the sync algorithm is testable without a network (see sync.test.ts).
  */
 
+import type { Bytes } from "./storage";
+
 const API = "https://api.github.com";
 
 /** Regular file. The only mode this app ever creates. */
@@ -53,20 +55,24 @@ export interface RemoteTree {
   entries: RemoteEntry[];
 }
 
-/** Either a blob that already exists remotely, or new text to store. */
-export type CommitEntry = { path: string; mode: string; sha: string } | { path: string; mode: string; content: string };
+/** Either a blob that already exists remotely, or new content to store. */
+export type CommitEntry =
+  | { path: string; mode: string; sha: string }
+  | { path: string; mode: string; content: string | Bytes };
 
 export interface Remote {
   readTree(): Promise<RemoteTree>;
   /** The blob's text, or null if it isn't UTF-8 text (see `decodeText`). */
   readBlobText(sha: string): Promise<string | null>;
+  /** The blob's bytes, whatever they are — images included. */
+  readBlobBytes(sha: string): Promise<Bytes>;
   /** Writes `entries` as the branch's complete new tree. Returns the commit sha. */
   commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string>;
 }
 
 // --- encoding ---------------------------------------------------------------
 
-function toBase64(bytes: Uint8Array): string {
+function toBase64(bytes: Bytes): string {
   let binary = "";
   // Chunked: String.fromCharCode(...bytes) blows the argument limit on a file
   // of any size.
@@ -76,7 +82,7 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function fromBase64(base64: string): Uint8Array {
+function fromBase64(base64: string): Bytes {
   // The API returns base64 wrapped at 60 columns.
   const binary = atob(base64.replace(/\s/g, ""));
   const bytes = new Uint8Array(binary.length);
@@ -93,7 +99,7 @@ function fromBase64(base64: string): Uint8Array {
  * isn't valid UTF-8 (or contains a NUL, which git itself treats as binary) is
  * reported as untouchable instead.
  */
-export function decodeText(bytes: Uint8Array): string | null {
+export function decodeText(bytes: Bytes): string | null {
   if (bytes.includes(0)) return null;
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -109,8 +115,10 @@ export function decodeText(bytes: Uint8Array): string | null {
  * already carries every blob's sha, so nothing has to be downloaded just to
  * find out whether it differs from the local copy.
  */
-export async function gitBlobSha(text: string): Promise<string> {
-  const body = new TextEncoder().encode(text);
+export async function gitBlobSha(content: string | Bytes): Promise<string> {
+  // Git hashes bytes, so text is encoded first and bytes are already there.
+  // An image and its own base64 are different files; only the bytes decide.
+  const body = typeof content === "string" ? new TextEncoder().encode(content) : content;
   const header = new TextEncoder().encode(`blob ${body.length}\0`);
   const bytes = new Uint8Array(header.length + body.length);
   bytes.set(header);
@@ -254,10 +262,16 @@ export class GitHubRemote implements Remote {
     return { commitSha, entries: tree.tree ?? [] };
   }
 
-  async readBlobText(sha: string): Promise<string | null> {
+  async readBlobBytes(sha: string): Promise<Bytes> {
     const blob = (await this.request(`${this.repoPath}/git/blobs/${sha}`)) as { content?: string; encoding?: string };
-    if (blob.encoding !== "base64" || typeof blob.content !== "string") return null;
-    return decodeText(fromBase64(blob.content));
+    if (blob.encoding !== "base64" || typeof blob.content !== "string") {
+      throw new GitHubError(`GitHub returned a blob webfs can't read (encoding: ${String(blob.encoding)}).`, 0);
+    }
+    return fromBase64(blob.content);
+  }
+
+  async readBlobText(sha: string): Promise<string | null> {
+    return decodeText(await this.readBlobBytes(sha));
   }
 
   async commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string> {
@@ -333,7 +347,7 @@ export class GitHubRemote implements Remote {
       method: "PUT",
       body: {
         message,
-        content: toBase64(new TextEncoder().encode(seed.content)),
+        content: toBase64(typeof seed.content === "string" ? new TextEncoder().encode(seed.content) : seed.content),
         branch: this.credentials.branch,
       },
     })) as { commit?: { sha?: string } };
@@ -345,10 +359,11 @@ export class GitHubRemote implements Remote {
     return sha;
   }
 
-  private async createBlob(content: string): Promise<string> {
+  private async createBlob(content: string | Bytes): Promise<string> {
+    const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
     const blob = (await this.request(`${this.repoPath}/git/blobs`, {
       method: "POST",
-      body: { content: toBase64(new TextEncoder().encode(content)), encoding: "base64" },
+      body: { content: toBase64(bytes), encoding: "base64" },
     })) as { sha: string };
     return blob.sha;
   }

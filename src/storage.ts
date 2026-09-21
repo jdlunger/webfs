@@ -16,6 +16,17 @@
  */
 
 export type Path = readonly string[];
+
+/**
+ * Bytes backed by a plain ArrayBuffer.
+ *
+ * Narrower than `Uint8Array`'s default, whose buffer is `ArrayBufferLike` and
+ * so could be a SharedArrayBuffer — which the DOM's write() and Blob()
+ * signatures reject. Everything here comes from `file.arrayBuffer()` or
+ * `TextEncoder`, both of which give a real ArrayBuffer, so naming it once
+ * beats casting at every boundary.
+ */
+export type Bytes = Uint8Array<ArrayBuffer>;
 export type WriteResult = "ok" | "busy";
 
 /** How long a save waits on another tab before deferring. */
@@ -124,6 +135,24 @@ export async function readFile(path: Path): Promise<string | null> {
   }
 }
 
+/**
+ * The file's bytes, undecoded.
+ *
+ * Text is the common case but not the only one: an image pasted into the
+ * editor is a real file here, and reading it as text would replace bytes with
+ * U+FFFD and write the damage back on the next save. Anything that might not
+ * be text goes through this.
+ */
+export async function readBytes(path: Path): Promise<Bytes | null> {
+  try {
+    const dir = await dirAt(parentOf(path));
+    const file = await (await dir.getFileHandle(nameOf(path))).getFile();
+    return new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 // --- writing -----------------------------------------------------------------
 
 /**
@@ -151,13 +180,17 @@ async function withWriteLock(name: string, write: () => Promise<void>): Promise<
   }
 }
 
-export function writeFile(path: Path, content: string): Promise<WriteResult> {
+/** Text or bytes: OPFS writables take either, and both are files here. */
+export function writeFile(path: Path, content: string | Bytes): Promise<WriteResult> {
   return withWriteLock(`webfs:${path.join("/")}`, async () => {
     const dir = await dirAt(parentOf(path), true);
     const handle = await dir.getFileHandle(nameOf(path), { create: true });
     const writable = await handle.createWritable();
     try {
-      await writable.write(content);
+      // Bytes go through a Blob: FileSystemWritableFileStream accepts one,
+      // and it sidesteps the ArrayBuffer-vs-ArrayBufferLike mismatch between
+      // a plain Uint8Array and the DOM's write() signature.
+      await writable.write(typeof content === "string" ? content : new Blob([content]));
     } finally {
       // close() is what commits the swap file.
       await writable.close();

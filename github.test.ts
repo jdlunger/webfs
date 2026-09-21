@@ -8,7 +8,7 @@
  * a 404 mid-sync rather than a type error.
  */
 import { test, expect, afterEach } from "bun:test";
-import { GitHubError, GitHubRemote, decodeText } from "./src/github";
+import { GitHubError, GitHubRemote, decodeText, gitBlobSha } from "./src/github";
 
 interface Call {
   method: string;
@@ -47,6 +47,47 @@ function stubFetch(routes: Record<string, unknown>): Call[] {
 
 const credentials = { owner: "someone", repo: "notes", branch: "main", token: "ghp_secret" };
 const base64 = (text: string) => Buffer.from(text, "utf-8").toString("base64");
+
+test("blob shas over raw bytes match git too, not just text", async () => {
+  // $ printf '\x89PNG\x0d\x0a\x1a\x0a\x00\x01\xfe\xff' > shot.png && git hash-object shot.png
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0xfe, 0xff]);
+  expect(await gitBlobSha(png)).toBe("9714067f58f8ff1bf97bed9bba57c23411963535");
+  // The bytes decide, not their spelling: an image and its base64 are
+  // different files, and hashing the wrong one would sync the wrong thing.
+  expect(await gitBlobSha(png)).not.toBe(await gitBlobSha(Buffer.from(png).toString("base64")));
+});
+
+test("a binary blob is uploaded as its own bytes, not as text", async () => {
+  const calls = stubFetch({
+    "GET /repos/someone/notes/git/ref/heads/main": { object: { sha: "c" } },
+    "GET /repos/someone/notes/git/commits/c": { tree: { sha: "t" } },
+    "GET /repos/someone/notes/git/trees/t?recursive=1": { tree: [] },
+    "POST /repos/someone/notes/git/blobs": { sha: "blob" },
+    "POST /repos/someone/notes/git/trees": { sha: "tree" },
+    "POST /repos/someone/notes/git/commits": { sha: "commit" },
+    "PATCH /repos/someone/notes/git/refs/heads/main": { object: { sha: "commit" } },
+  });
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xfe, 0xff]);
+  const remote = new GitHubRemote(credentials);
+  await remote.readTree();
+  await remote.commit([{ path: "assets/shot.png", mode: "100644", content: png }], "webfs sync", "c");
+
+  const uploaded = calls.find(c => c.path.endsWith("/git/blobs") && c.method === "POST")!;
+  expect(uploaded.body.encoding).toBe("base64");
+  expect([...Buffer.from(uploaded.body.content, "base64")]).toEqual([...png]);
+});
+
+test("a blob that came back as bytes round-trips through readBlobBytes", async () => {
+  const png = new Uint8Array([0x00, 0x01, 0xff, 0xfe, 0x80]);
+  stubFetch({
+    "GET /repos/someone/notes/git/blobs/b": { encoding: "base64", content: Buffer.from(png).toString("base64") },
+  });
+  const remote = new GitHubRemote(credentials);
+  expect([...(await remote.readBlobBytes("b"))]).toEqual([...png]);
+  // The same blob as text is null, which is how sync knows not to merge it.
+  expect(await remote.readBlobText("b")).toBeNull();
+});
 
 test("reading the tree walks ref → commit → recursive tree", async () => {
   const calls = stubFetch({

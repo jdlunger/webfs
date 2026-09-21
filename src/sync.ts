@@ -22,9 +22,9 @@
  * sends the complete desired tree and lets deletions fall out of absence
  * rather than being tracked separately.
  */
-import { FILE_MODE, gitBlobSha, type CommitEntry, type Remote, type RemoteEntry } from "./github";
+import { FILE_MODE, decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteEntry } from "./github";
 import { mergeText } from "./merge";
-import { readFile, walk, writeFile, removeEntry } from "./storage";
+import { readBytes, walk, writeFile, removeEntry, type Bytes } from "./storage";
 import { segmentsOf } from "./fs";
 
 /** path → git blob sha. */
@@ -103,15 +103,21 @@ export interface SyncSummary {
   conflicted: Array<{ path: string; keptAs: string }>;
   deletedLocal: string[];
   deletedRemote: string[];
-  /** Remote files that aren't UTF-8 text. Left untouched on both sides. */
-  skipped: string[];
   commitSha: string | null;
 }
 
+/**
+ * Bytes, not text.
+ *
+ * Text is the common case, but an image pasted into a note is a real file in
+ * the store, and a sync that decoded it would replace bytes with U+FFFD and
+ * push the damage. So bytes are the medium throughout and text is a *view*,
+ * taken only where it's needed — which is the three-way merge, and nothing
+ * else.
+ */
 export interface LocalFs {
-  /** Every file in the store, as path → text. */
-  read(): Promise<Record<string, string>>;
-  write(path: string, content: string): Promise<void>;
+  read(): Promise<Record<string, Bytes>>;
+  write(path: string, content: Bytes): Promise<void>;
   remove(path: string): Promise<void>;
 }
 
@@ -138,13 +144,13 @@ export const opfsLocalFs: LocalFs = {
   },
 };
 
-export async function readLocalTree(): Promise<Record<string, string>> {
-  const files: Record<string, string> = {};
+export async function readLocalTree(): Promise<Record<string, Bytes>> {
+  const files: Record<string, Bytes> = {};
   const visit = async (entries: Awaited<ReturnType<typeof walk>>, prefix: string[]): Promise<void> => {
     for (const entry of entries) {
       const path = [...prefix, entry.name];
       if (entry.kind === "directory") await visit(entry.children, path);
-      else files[path.join("/")] = (await readFile(path)) ?? "";
+      else files[path.join("/")] = (await readBytes(path)) ?? new Uint8Array(0);
     }
   };
   await visit(await walk(), []);
@@ -174,8 +180,12 @@ export function conflictCopyPath(path: string, taken: ReadonlySet<string>): stri
 export interface SyncResult {
   state: SyncState;
   summary: SyncSummary;
-  /** Local files this sync wrote, so the app can refresh what's on screen. */
-  written: Array<{ path: string; content: string }>;
+  /**
+   * Local files this sync wrote, so the app can refresh what's on screen.
+   * `content` is null for a file that isn't text — there is nothing for the
+   * editor to show, but the tree still has to be re-read.
+   */
+  written: Array<{ path: string; content: string | null }>;
   removed: string[];
 }
 
@@ -188,9 +198,9 @@ export interface SyncResult {
  * function knows which files the push actually changes.
  */
 export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState): Promise<SyncResult> {
-  const localText = await local.read();
+  const localBytes = await local.read();
   const localSha: ShaMap = {};
-  for (const [path, content] of Object.entries(localText)) localSha[path] = await gitBlobSha(content);
+  for (const [path, content] of Object.entries(localBytes)) localSha[path] = await gitBlobSha(content);
 
   const tree = await remote.readTree();
   const remoteSha: ShaMap = {};
@@ -210,7 +220,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
   // repository is treated as new, which refills the device. The opposite
   // mistake (re-downloading notes someone really did delete) costs a second
   // deletion; this one costs the notes.
-  const lostLocalStore = Object.keys(localText).length === 0 && Object.keys(state.files).length > 0;
+  const lostLocalStore = Object.keys(localBytes).length === 0 && Object.keys(state.files).length > 0;
   const base = lostLocalStore ? {} : state.files;
 
   const plan = planSync(base, localSha, remoteSha);
@@ -221,69 +231,57 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     conflicted: [],
     deletedLocal: [],
     deletedRemote: [...plan.deleteRemote],
-    skipped: [],
     commitSha: tree.commitSha,
   };
-  const written: Array<{ path: string; content: string }> = [];
+  const written: Array<{ path: string; content: string | null }> = [];
   const removed: string[] = [];
-  /** The tree as it will be after this sync: path → text. Starts as local. */
-  const finalText: Record<string, string> = { ...localText };
+  /** The tree as it will be after this sync: path → bytes. Starts as local. */
+  const finalBytes: Record<string, Bytes> = { ...localBytes };
 
-  const writeLocal = async (path: string, content: string) => {
+  const writeLocal = async (path: string, content: Bytes) => {
     await local.write(path, content);
-    finalText[path] = content;
-    written.push({ path, content });
+    finalBytes[path] = content;
+    written.push({ path, content: decodeText(content) });
   };
 
   for (const path of plan.pull) {
-    const theirs = await remote.readBlobText(remoteSha[path]!);
-    if (theirs === null) {
-      summary.skipped.push(path);
-      carried.push({ path, mode: FILE_MODE, sha: remoteSha[path]! });
-      continue;
-    }
-    await writeLocal(path, theirs);
+    await writeLocal(path, await remote.readBlobBytes(remoteSha[path]!));
     summary.pulled.push(path);
   }
 
   for (const path of plan.merge) {
-    const theirs = await remote.readBlobText(remoteSha[path]!);
-    if (theirs === null) {
-      summary.skipped.push(path);
-      carried.push({ path, mode: FILE_MODE, sha: remoteSha[path]! });
-      continue;
-    }
+    const theirs = await remote.readBlobBytes(remoteSha[path]!);
     // The base *text*, not just its sha: it was pushed at the last sync, so
     // the blob is still reachable in the repo. If it isn't (history rewritten,
     // repo re-created), fall back to keeping both copies rather than guessing.
-    const baseText = await remote.readBlobText(base[path]!).catch(() => null);
-    if (baseText === null) {
+    const baseText = await remote.readBlobBytes(base[path]!).then(decodeText, () => null);
+    const mine = decodeText(localBytes[path]!);
+    const theirText = decodeText(theirs);
+    // Only text can be merged. Two versions of a changed image have no
+    // middle ground, so rather than picking one and losing the other, they
+    // take the same route as files with no shared history: keep both.
+    if (baseText === null || mine === null || theirText === null) {
       plan.conflict.push(path);
       continue;
     }
-    const merged = mergeText(baseText, localText[path]!, theirs);
-    if (merged !== localText[path]) await writeLocal(path, merged);
+    const merged = mergeText(baseText, mine, theirText);
+    if (merged !== mine) await writeLocal(path, new TextEncoder().encode(merged));
     summary.merged.push(path);
   }
 
   for (const path of plan.conflict) {
-    const theirs = await remote.readBlobText(remoteSha[path]!);
-    if (theirs === null) {
-      summary.skipped.push(path);
-      carried.push({ path, mode: FILE_MODE, sha: remoteSha[path]! });
-      continue;
-    }
-    // No shared history: there's no honest way to merge two files that just
-    // happen to share a name, and silently preferring one side loses writing
-    // that exists nowhere else. Both are kept; the push then carries both.
-    const keptAs = conflictCopyPath(path, new Set(Object.keys(finalText)));
-    await writeLocal(keptAs, theirs);
+    // No shared history, or nothing mergeable: there's no honest way to merge
+    // two files that just happen to share a name, and silently preferring one
+    // side loses work that exists nowhere else. Both are kept; the push then
+    // carries both.
+    const keptAs = conflictCopyPath(path, new Set(Object.keys(finalBytes)));
+    await writeLocal(keptAs, await remote.readBlobBytes(remoteSha[path]!));
     summary.conflicted.push({ path, keptAs });
   }
 
   for (const path of plan.deleteLocal) {
     await local.remove(path);
-    delete finalText[path];
+    delete finalBytes[path];
     removed.push(path);
     summary.deletedLocal.push(path);
   }
@@ -292,7 +290,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
   // the sha computed at the top.
   const rewritten = new Set(written.map(file => file.path));
   const finalSha: ShaMap = {};
-  for (const [path, content] of Object.entries(finalText)) {
+  for (const [path, content] of Object.entries(finalBytes)) {
     finalSha[path] = rewritten.has(path) ? await gitBlobSha(content) : localSha[path]!;
   }
 
@@ -306,7 +304,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
 
   const entries: CommitEntry[] = [
     ...carried,
-    ...Object.entries(finalText).map(([path, content]) =>
+    ...Object.entries(finalBytes).map(([path, content]) =>
       remoteSha[path] === finalSha[path]
         ? { path, mode: FILE_MODE, sha: finalSha[path]! }
         : { path, mode: FILE_MODE, content },
@@ -364,6 +362,5 @@ export function describeSummary(summary: SyncSummary): string {
   if (summary.conflicted.length) parts.push(`kept both copies of ${count(summary.conflicted.length, "file")}`);
   if (summary.deletedLocal.length) parts.push(`deleted ${count(summary.deletedLocal.length, "file")} here`);
   if (summary.deletedRemote.length) parts.push(`deleted ${count(summary.deletedRemote.length, "file")} on GitHub`);
-  if (summary.skipped.length) parts.push(`skipped ${count(summary.skipped.length, "non-text file")}`);
   return parts.length === 0 ? "Up to date" : parts.join(", ").replace(/^./, c => c.toUpperCase());
 }

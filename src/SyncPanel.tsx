@@ -19,12 +19,23 @@ export function SyncPanel({ sync }: { sync: GitHubSync }) {
       {config ? (
         <>
           <div className="sync-info">
-            <button className="sync-repo" title="GitHub sync settings" onClick={() => setEditing(true)}>
+            {/* The repo name is the obvious thing to click to *see* the repo,
+                so it goes where it leads; settings get their own button. */}
+            <a
+              className="sync-repo"
+              href={branchUrl(config)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${config.owner}/${config.repo} on GitHub`}
+            >
               {config.owner}/{config.repo}
               <span className="sync-branch">{config.branch}</span>
-            </button>
+            </a>
             <SyncStatusLine phase={status.phase} message={status.message} lastSyncedAt={status.lastSyncedAt} />
           </div>
+          <button className="sync-settings" title="GitHub sync settings" onClick={() => setEditing(true)}>
+            ⚙
+          </button>
           <button
             className="sync-now"
             title="Sync with GitHub now"
@@ -42,6 +53,16 @@ export function SyncPanel({ sync }: { sync: GitHubSync }) {
       {editing && <SyncSettings sync={sync} onClose={() => setEditing(false)} />}
     </div>
   );
+}
+
+/**
+ * The branch as GitHub shows it. `/tree/<branch>` rather than the repo root,
+ * so the link lands on what webfs is actually syncing even when that isn't
+ * the default branch.
+ */
+export function branchUrl({ owner, repo, branch }: Pick<SyncConfig, "owner" | "repo" | "branch">): string {
+  const encode = (segment: string) => segment.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree/${encode(branch)}`;
 }
 
 /** "Synced 2m ago" decays on its own, so it can't sit there claiming "just now". */
