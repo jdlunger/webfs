@@ -183,8 +183,11 @@ export interface SyncResult {
  * One full pass. Callers should serialize these (App takes a Web Lock, so two
  * tabs don't push over each other) and retry once on a 422 from the ref
  * update, which is how a lost race announces itself.
+ *
+ * The commit title is built here rather than passed in, because only this
+ * function knows which files the push actually changes.
  */
-export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState, message: string): Promise<SyncResult> {
+export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState): Promise<SyncResult> {
   const localText = await local.read();
   const localSha: ShaMap = {};
   for (const [path, content] of Object.entries(localText)) localSha[path] = await gitBlobSha(content);
@@ -317,9 +320,38 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState,
     throw new Error("Refusing to sync: this would leave the repository with no files. If that's really what you want, delete them on GitHub.");
   }
 
-  const commitSha = await remote.commit(entries, message, tree.commitSha);
+  // What this commit actually changes on the branch: everything whose sha
+  // differs from the remote's, plus everything the remote has that the final
+  // tree doesn't — a deletion is as much a change as an edit.
+  const changed = [
+    ...Object.keys(finalSha).filter(path => remoteSha[path] !== finalSha[path]),
+    ...Object.keys(remoteSha).filter(path => finalSha[path] === undefined),
+  ];
+
+  const commitSha = await remote.commit(entries, commitTitle(changed), tree.commitSha);
   summary.commitSha = commitSha;
   return { state: { commitSha, files: finalSha }, summary, written, removed };
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * The commit title: when the sync happened, and what it was about.
+ *
+ * Local time rather than UTC — the commit already carries an authoritative
+ * timestamp, so this one is here to be recognised ("that was my lunchtime
+ * edit"), which only works in the clock the person was looking at.
+ *
+ * Paths, not bare filenames: two notes called `todo.md` in different folders
+ * are ordinary here, and a title that can't tell them apart is worth less
+ * than the characters it costs. Only the first is named, since a title is a
+ * title; the ellipsis says to open the commit for the rest.
+ */
+export function commitTitle(changed: readonly string[], at: Date = new Date()): string {
+  const when = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  const [first, ...rest] = [...changed].sort();
+  if (first === undefined) return `${when} sync`;
+  return `${when} ${first}${rest.length > 0 ? " …" : ""}`;
 }
 
 /** A one-line description of what a sync did, for the status bar. */

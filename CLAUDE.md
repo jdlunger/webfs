@@ -271,6 +271,14 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   `applySyncResult` in `App.tsx` — which bumps `externalEdit` for the open
   file and announces on the BroadcastChannel, since other tabs have no other
   way to hear about a write made outside their own edit loop.
+- **The commit title is built in `syncOnce`, not passed to it** (`commitTitle`):
+  only that function knows which paths the push actually changes, which is
+  what the title names — `2026-09-21 14:32 Notes/todo.md`, with a trailing
+  `…` when more than one changed. The time is local, because the commit
+  already carries an authoritative timestamp and this one exists to be
+  recognised; the path is full, because two `todo.md`s in different folders
+  are ordinary here. Deletions count as changes worth naming. Names are
+  sorted, so the same set of changes always titles the same way.
 - **Timing:** on load, 4s after edits settle, every 60s, on tab-visible and on
   `online`, plus the button. Auto-sync is a checkbox; the button always works.
 - **Keystrokes that land mid-sync are merged, not dropped.** A sync reads OPFS

@@ -100,7 +100,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
         let lastError: unknown;
         for (let attempt = 0; attempt <= RETRIES; attempt++) {
           try {
-            return await syncOnce(opfsLocalFs, remote, loadState(current), "webfs sync");
+            return await syncOnce(opfsLocalFs, remote, loadState(current));
           } catch (err) {
             // 422 on the ref update means another writer moved the branch
             // between our read and our push. Everything is re-read on the way

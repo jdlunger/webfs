@@ -9,7 +9,7 @@
  * pointing a browser at a real repository.
  */
 import { test, expect } from "bun:test";
-import { conflictCopyPath, planSync, syncOnce, type LocalFs, type ShaMap, type SyncState } from "./src/sync";
+import { commitTitle, conflictCopyPath, planSync, syncOnce, type LocalFs, type ShaMap, type SyncState } from "./src/sync";
 import { decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteTree } from "./src/github";
 
 // --- git blob hashing --------------------------------------------------------
@@ -160,7 +160,7 @@ test("a first sync of a fresh repo pushes the whole store as one commit", async 
   const local = fakeLocal({ "Notes/todo.md": "- [ ] one", "Notes/welcome.md": "# hi" });
   const remote = new FakeRemote({}, null);
 
-  const result = await syncOnce(local, remote, EMPTY, "webfs sync");
+  const result = await syncOnce(local, remote, EMPTY);
 
   expect(remote.files).toEqual({ "Notes/todo.md": "- [ ] one", "Notes/welcome.md": "# hi" });
   expect(remote.commits).toHaveLength(1);
@@ -173,7 +173,7 @@ test("a fresh browser fills itself from the repo without pushing anything", asyn
   const local = fakeLocal({});
   const remote = new FakeRemote({ "a.md": "remote text" });
 
-  const result = await syncOnce(local, remote, EMPTY, "webfs sync");
+  const result = await syncOnce(local, remote, EMPTY);
 
   expect(local.files).toEqual({ "a.md": "remote text" });
   expect(remote.commits).toHaveLength(0);
@@ -184,8 +184,8 @@ test("a second sync with nothing changed is a no-op", async () => {
   const local = fakeLocal({ "a.md": "text" });
   const remote = new FakeRemote({ "a.md": "text" });
 
-  const first = await syncOnce(local, remote, EMPTY, "webfs sync");
-  const second = await syncOnce(local, remote, first.state, "webfs sync");
+  const first = await syncOnce(local, remote, EMPTY);
+  const second = await syncOnce(local, remote, first.state);
 
   expect(remote.commits).toHaveLength(0);
   expect(second.written).toEqual([]);
@@ -195,12 +195,12 @@ test("a second sync with nothing changed is a no-op", async () => {
 test("edits on both sides of a shared base are merged, and the merge is pushed", async () => {
   const local = fakeLocal({ "a.md": "intro\nbody" });
   const remote = new FakeRemote({ "a.md": "intro\nbody" });
-  const base = (await syncOnce(local, remote, EMPTY, "webfs sync")).state;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
 
   local.files["a.md"] = "intro edited\nbody";
   remote.files["a.md"] = "intro\nbody\nappended on another device";
 
-  const result = await syncOnce(local, remote, base, "webfs sync");
+  const result = await syncOnce(local, remote, base);
 
   const merged = "intro edited\nbody\nappended on another device";
   expect(local.files["a.md"]).toBe(merged);
@@ -212,7 +212,7 @@ test("files that share only a name keep both copies rather than one overwriting 
   const local = fakeLocal({ "notes.md": "written here" });
   const remote = new FakeRemote({ "notes.md": "written on GitHub" });
 
-  const result = await syncOnce(local, remote, EMPTY, "webfs sync");
+  const result = await syncOnce(local, remote, EMPTY);
 
   expect(local.files["notes.md"]).toBe("written here");
   expect(local.files["notes (github).md"]).toBe("written on GitHub");
@@ -224,12 +224,12 @@ test("a deletion here deletes there, and a deletion there deletes here", async (
   const files = { "gone-here.md": "x", "gone-there.md": "y", "kept.md": "z" };
   const local = fakeLocal({ ...files });
   const remote = new FakeRemote({ ...files });
-  const base = (await syncOnce(local, remote, EMPTY, "webfs sync")).state;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
 
   delete local.files["gone-here.md"];
   delete remote.files["gone-there.md"];
 
-  const result = await syncOnce(local, remote, base, "webfs sync");
+  const result = await syncOnce(local, remote, base);
 
   expect(Object.keys(local.files)).toEqual(["kept.md"]);
   expect(Object.keys(remote.files)).toEqual(["kept.md"]);
@@ -240,12 +240,12 @@ test("a deletion here deletes there, and a deletion there deletes here", async (
 test("a file deleted on GitHub but edited here comes back rather than vanishing", async () => {
   const local = fakeLocal({ "a.md": "original" });
   const remote = new FakeRemote({ "a.md": "original" });
-  const base = (await syncOnce(local, remote, EMPTY, "webfs sync")).state;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
 
   local.files["a.md"] = "edited while offline";
   remote.files = {};
 
-  await syncOnce(local, remote, base, "webfs sync");
+  await syncOnce(local, remote, base);
 
   expect(local.files["a.md"]).toBe("edited while offline");
   expect(remote.files["a.md"]).toBe("edited while offline");
@@ -256,7 +256,7 @@ test("non-text files are left untouched on both sides, not pulled or corrupted",
   const remote = new FakeRemote({ "a.md": "text", "logo.png": "\u0000binary-ish" });
   remote.binary.add("logo.png");
 
-  const result = await syncOnce(local, remote, EMPTY, "webfs sync");
+  const result = await syncOnce(local, remote, EMPTY);
 
   expect(local.files["logo.png"]).toBeUndefined();
   expect(remote.files["logo.png"]).toBe("\u0000binary-ish");
@@ -267,13 +267,13 @@ test("non-text files are left untouched on both sides, not pulled or corrupted",
 test("a store that lost its data refills from the repo instead of emptying it", async () => {
   const local = fakeLocal({ "a.md": "text", "b.md": "more" });
   const remote = new FakeRemote({ "a.md": "text", "b.md": "more" });
-  const base = (await syncOnce(local, remote, EMPTY, "webfs sync")).state;
+  const base = (await syncOnce(local, remote, EMPTY)).state;
 
   // What OPFS eviction looks like: the files are gone but the base snapshot
   // in localStorage still lists them, which naively reads as two deletions.
   local.files = {};
 
-  const result = await syncOnce(local, remote, base, "webfs sync");
+  const result = await syncOnce(local, remote, base);
 
   expect(local.files).toEqual({ "a.md": "text", "b.md": "more" });
   expect(remote.files).toEqual({ "a.md": "text", "b.md": "more" });
@@ -297,10 +297,61 @@ test("entries webfs can't represent survive a push that rewrites the tree", asyn
   });
 
   local.files["b.md"] = "new file";
-  await syncOnce(local, remote, EMPTY, "webfs sync");
+  await syncOnce(local, remote, EMPTY);
 
   // The push sends the complete tree, so anything not carried over would be
   // silently deleted from the repository.
   expect(remote.commits[0]!.files["vendor/lib"]).toBe("<a submodule pointer>");
   expect(remote.commits[0]!.files["b.md"]).toBe("new file");
+});
+
+// --- commit titles ----------------------------------------------------------
+
+const at = new Date(2026, 8, 21, 14, 32); // 21 September 2026, 14:32 local
+
+test("a commit title says when it happened and which file it was", () => {
+  expect(commitTitle(["Notes/todo.md"], at)).toBe("2026-09-21 14:32 Notes/todo.md");
+});
+
+test("several files are named by the first, with an ellipsis for the rest", () => {
+  expect(commitTitle(["Notes/todo.md", "Notes/welcome.md"], at)).toBe("2026-09-21 14:32 Notes/todo.md …");
+});
+
+test("the file named is stable regardless of the order changes were found in", () => {
+  const forwards = commitTitle(["a.md", "b.md", "c.md"], at);
+  const backwards = commitTitle(["c.md", "b.md", "a.md"], at);
+  expect(forwards).toBe(backwards);
+  expect(forwards).toBe("2026-09-21 14:32 a.md …");
+});
+
+test("months, days, hours and minutes are all zero-padded", () => {
+  expect(commitTitle(["a.md"], new Date(2026, 0, 5, 9, 7))).toBe("2026-01-05 09:07 a.md");
+});
+
+test("a title still reads sensibly if nothing was named", () => {
+  expect(commitTitle([], at)).toBe("2026-09-21 14:32 sync");
+});
+
+test("the title on a real push names the file that changed", async () => {
+  const local = fakeLocal({ "Notes/todo.md": "one", "Notes/welcome.md": "hi" });
+  const remote = new FakeRemote({ "Notes/todo.md": "one", "Notes/welcome.md": "hi" });
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  local.files["Notes/todo.md"] = "one, edited";
+  await syncOnce(local, remote, base);
+
+  // Only todo.md differs from the branch, so it alone is named — no ellipsis,
+  // even though the tree being pushed contains both files.
+  expect(remote.commits.at(-1)!.message).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} Notes\/todo\.md$/);
+});
+
+test("a deletion is a change worth naming in the title", async () => {
+  const local = fakeLocal({ "a.md": "one", "b.md": "two" });
+  const remote = new FakeRemote({ "a.md": "one", "b.md": "two" });
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  delete local.files["b.md"];
+  await syncOnce(local, remote, base);
+
+  expect(remote.commits.at(-1)!.message).toContain("b.md");
 });
