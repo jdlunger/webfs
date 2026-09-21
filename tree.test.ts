@@ -2,14 +2,13 @@
  * Covers the in-memory projection of the OPFS tree.
  *
  * The OPFS calls themselves can't run headless, so the real filesystem
- * behaviour is verified by driving a browser. What's testable here is the part
- * with actual logic in it: turning a directory walk into the flat node record,
- * and keeping session ids stable across renames and moves — which is what
- * stops the editor tearing down while you rename the file you're typing in.
+ * behaviour is verified by driving a browser. What's testable here is turning
+ * a directory walk into the flat node record, and the path arithmetic that
+ * replaced the old id registry now that a node's id *is* its path.
  */
 import { test, expect } from "bun:test";
-import { ROOT_ID, canMove, childrenOf, findNodeByPath, segmentsOf } from "./src/fs";
-import { adoptContent, projectTree, repath } from "./src/tree";
+import { ROOT_ID, canMove, childrenOf, findNodeByPath, getNodePath, idOf as idOf2, segmentsOf } from "./src/fs";
+import { adoptContent, projectTree } from "./src/tree";
 import { isValidName } from "./src/storage";
 import type { WalkEntry } from "./src/storage";
 
@@ -28,10 +27,19 @@ test("a directory walk becomes a flat node record with parent links", () => {
   expect(fs[idOf(fs, "/Notes/todo.md")]!.type).toBe("file");
 });
 
-test("storage paths round-trip back to raw name segments", () => {
+test("an id is the path, so segments are a split rather than a tree walk", () => {
   const fs = projectTree(sample());
-  expect(segmentsOf(fs, idOf(fs, "/Notes/todo.md"))).toEqual(["Notes", "todo.md"]);
-  expect(segmentsOf(fs, ROOT_ID)).toEqual([]);
+  expect(idOf(fs, "/Notes/todo.md")).toBe("Notes/todo.md");
+  expect(segmentsOf("Notes/todo.md")).toEqual(["Notes", "todo.md"]);
+  expect(segmentsOf(ROOT_ID)).toEqual([]);
+  expect(idOf2(["Notes", "todo.md"])).toBe("Notes/todo.md");
+});
+
+test("URL paths encode each segment, and read back to the same node", () => {
+  const fs = projectTree([dir("My Notes", [file("a b.md")])]);
+  const id = idOf(fs, "/My Notes/a b.md");
+  expect(getNodePath(id)).toBe("/My%20Notes/a%20b.md");
+  expect(findNodeByPath(fs, getNodePath(id))!.id).toBe(id);
 });
 
 test("re-walking keeps the same id for the same path", () => {
@@ -40,26 +48,19 @@ test("re-walking keeps the same id for the same path", () => {
   expect(idOf(after, "/Notes/todo.md")).toBe(idOf(before, "/Notes/todo.md"));
 });
 
-test("a rename carries the id across, so the editor doesn't remount", () => {
+test("a renamed node is simply a different id, with no registry to update", () => {
   const before = projectTree(sample());
-  const original = idOf(before, "/Notes/todo.md");
+  expect(idOf(before, "/Notes/todo.md")).toBe("Notes/todo.md");
 
-  repath(["Notes", "todo.md"], ["Notes", "later.md"]);
   const after = projectTree([dir("Notes", [file("later.md"), file("welcome.md")]), dir("Projects", [file("ideas.md")])]);
-
-  expect(idOf(after, "/Notes/later.md")).toBe(original);
+  expect(after["Notes/todo.md"]).toBeUndefined();
+  expect(idOf(after, "/Notes/later.md")).toBe("Notes/later.md");
 });
 
-test("moving a folder carries its children's ids too", () => {
-  const before = projectTree(sample());
-  const folder = idOf(before, "/Notes");
-  const child = idOf(before, "/Notes/todo.md");
-
-  repath(["Notes"], ["Projects", "Notes"]);
-  const after = projectTree([dir("Projects", [dir("Notes", [file("todo.md"), file("welcome.md")]), file("ideas.md")])]);
-
-  expect(idOf(after, "/Projects/Notes")).toBe(folder);
-  expect(idOf(after, "/Projects/Notes/todo.md")).toBe(child);
+test("moving a folder reparents its children by prefix", () => {
+  const after = projectTree([dir("Projects", [dir("Notes", [file("todo.md")]), file("ideas.md")])]);
+  expect(after["Projects/Notes/todo.md"]!.parentId).toBe("Projects/Notes");
+  expect(after["Projects/Notes"]!.parentId).toBe("Projects");
 });
 
 test("re-reading the tree keeps text already loaded in this tab", () => {

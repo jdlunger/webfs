@@ -1,6 +1,12 @@
 /**
  * The in-memory shape of the filesystem, and pure queries over it.
  *
+ * A node's id *is* its path — the segments joined by "/" — because at any
+ * instant a file has exactly one path, and `isValidName` guarantees no segment
+ * contains a separator. So the record is keyed by path, `segmentsOf` is a
+ * split rather than a walk up the parents, and "is this inside that folder" is
+ * a prefix test.
+ *
  * This is a projection of what's in OPFS (built by tree.ts), not a store: it
  * holds no persistence and is never the source of truth. Structural changes go
  * to storage.ts and the tree is re-read, rather than being edited here.
@@ -8,6 +14,7 @@
 export type NodeType = "file" | "folder";
 
 export interface FSNode {
+  /** The node's path, segments joined by "/". Empty string for the root. */
   id: string;
   name: string;
   type: NodeType;
@@ -21,7 +28,21 @@ export interface FSNode {
 
 export type FileSystem = Record<string, FSNode>;
 
-export const ROOT_ID = "root";
+export const ROOT_ID = "";
+
+/** Storage path of a node, as raw name segments. */
+export function segmentsOf(id: string): string[] {
+  return id === ROOT_ID ? [] : id.split("/");
+}
+
+export function idOf(segments: readonly string[]): string {
+  return segments.join("/");
+}
+
+/** The same path, encoded for the URL bar. */
+export function getNodePath(id: string): string {
+  return "/" + segmentsOf(id).map(encodeURIComponent).join("/");
+}
 
 export function childrenOf(fs: FileSystem, parentId: string): FSNode[] {
   return Object.values(fs)
@@ -38,56 +59,22 @@ export function updateFileContent(fs: FileSystem, id: string, content: string): 
   return { ...fs, [id]: { ...node, content } };
 }
 
-function isDescendant(fs: FileSystem, ancestorId: string, nodeId: string): boolean {
-  let cursor = fs[nodeId];
-  while (cursor?.parentId) {
-    if (cursor.parentId === ancestorId) return true;
-    cursor = fs[cursor.parentId];
-  }
-  return false;
-}
-
 /**
- * Guards a move. Dropping a folder into its own subtree has to be rejected
- * here: directories are relocated by recursive copy (OPFS gives them no
- * move()), so the copy would descend into the target it is creating and never
- * terminate.
+ * Guards a move. Dropping a folder into its own subtree has to be rejected:
+ * directories are relocated by recursive copy (OPFS gives them no move()), so
+ * the copy would descend into the target it is creating and never terminate.
  */
 export function canMove(fs: FileSystem, id: string, newParentId: string): boolean {
   const node = fs[id];
   const target = fs[newParentId];
   if (!node || !target || target.type !== "folder") return false;
   if (node.parentId === newParentId) return false;
-  if (id === newParentId) return false;
-  return !isDescendant(fs, id, newParentId);
-}
-
-/** Storage path of a node, as raw name segments. */
-export function segmentsOf(fs: FileSystem, id: string): string[] {
-  const segments: string[] = [];
-  let cursor: FSNode | undefined = fs[id];
-  while (cursor && cursor.id !== ROOT_ID) {
-    segments.unshift(cursor.name);
-    cursor = cursor.parentId ? fs[cursor.parentId] : undefined;
-  }
-  return segments;
-}
-
-/** The same path, encoded for the URL bar. */
-export function getNodePath(fs: FileSystem, id: string): string {
-  return "/" + segmentsOf(fs, id).map(encodeURIComponent).join("/");
+  return newParentId !== id && !newParentId.startsWith(`${id}/`);
 }
 
 export function findNodeByPath(fs: FileSystem, path: string): FSNode | null {
-  const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
-  let parentId = ROOT_ID;
-  let node: FSNode | undefined;
-  for (const part of parts) {
-    node = childrenOf(fs, parentId).find(n => n.name === part);
-    if (!node) return null;
-    parentId = node.id;
-  }
-  return node ?? null;
+  const id = idOf(path.split("/").filter(Boolean).map(decodeURIComponent));
+  return id === ROOT_ID ? null : fs[id] ?? null;
 }
 
 export function findFirstFile(fs: FileSystem, parentId: string = ROOT_ID): FSNode | null {

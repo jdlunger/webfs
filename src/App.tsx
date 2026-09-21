@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./index.css";
-import { type FileSystem, canMove, findFirstFile, findNodeByPath, getNodePath, segmentsOf, updateFileContent } from "./fs";
+import { type FileSystem, canMove, findFirstFile, findNodeByPath, getNodePath, idOf, segmentsOf, updateFileContent } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
 import { BASE_PATH } from "./basePath";
@@ -20,7 +20,7 @@ import {
   walk,
   writeFile,
 } from "./storage";
-import { adoptContent, idForPath, loadTree, projectTree, repath } from "./tree";
+import { adoptContent, loadTree, projectTree } from "./tree";
 
 /** Content saves coalesce over this window rather than firing per keystroke. */
 const WRITE_DEBOUNCE_MS = 400;
@@ -76,12 +76,7 @@ export function App() {
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
 
-  /**
-   * Everything below is keyed by node id, not path: ids survive renames (see
-   * tree.ts's repath), so none of this needs re-keying when a file moves.
-   * Paths are derived at the storage boundary and nowhere else.
-   */
-  /** Text as last seen on disk — the base for three-way merges. */
+  /** Text as last seen on disk, keyed by path — the base for three-way merges. */
   const baseContent = useRef(new Map<string, string>());
   const pending = useRef(new Map<string, { content: string; timer: ReturnType<typeof setTimeout> }>());
 
@@ -94,17 +89,14 @@ export function App() {
   const flushWrite = useCallback(async (id: string) => {
     const queued = pending.current.get(id);
     if (!queued) return;
-
-    // Resolved now rather than when the write was queued, so a file renamed
-    // in the meantime is written to where it actually lives — and one deleted
-    // in the meantime isn't resurrected at its old path.
-    const segments = fsRef.current ? segmentsOf(fsRef.current, id) : [];
-    if (segments.length === 0) {
+    // Another tab may have deleted the file out from under us; don't
+    // resurrect it.
+    if (fsRef.current && !fsRef.current[id]) {
       pending.current.delete(id);
       return;
     }
 
-    const result = await writeFile(segments, queued.content);
+    const result = await writeFile(segmentsOf(id), queued.content);
     if (result === "busy") {
       // Another tab is mid-save. Nothing is lost; come back to it.
       queued.timer = setTimeout(() => void flushWrite(id), WRITE_RETRY_MS);
@@ -113,7 +105,7 @@ export function App() {
     // Leave anything typed while the write was in flight queued for next time.
     if (pending.current.get(id)?.content === queued.content) pending.current.delete(id);
     baseContent.current.set(id, queued.content);
-    announce({ kind: "file", path: segments });
+    announce({ kind: "file", path: segmentsOf(id) });
   }, []);
 
   const scheduleWrite = useCallback(
@@ -125,9 +117,25 @@ export function App() {
     [flushWrite],
   );
 
+  const flushAll = useCallback(async () => {
+    for (const [id, queued] of [...pending.current]) {
+      clearTimeout(queued.timer);
+      await flushWrite(id);
+    }
+  }, [flushWrite]);
+
+  /** Follows the selection when the node it points at is renamed or moved. */
+  const remapSelection = useCallback((from: string, to: string) => {
+    setSelectedId(prev => (prev === from ? to : prev?.startsWith(`${from}/`) ? to + prev.slice(from.length) : prev));
+  }, []);
+
   /** Runs a structural change, then re-reads the tree and tells other tabs. */
   const mutate = useCallback(
     async (change: () => Promise<void>) => {
+      // Settle queued text before the tree moves under it: a write is keyed by
+      // the path it was queued for, so this is what keeps a rename from
+      // stranding it at the old name.
+      await flushAll();
       try {
         await change();
       } catch (err) {
@@ -144,7 +152,7 @@ export function App() {
       await refreshTree();
       announce({ kind: "tree" });
     },
-    [refreshTree],
+    [flushAll, refreshTree],
   );
 
   // Initial load.
@@ -175,7 +183,7 @@ export function App() {
     if (!node || node.type !== "file" || node.content !== undefined) return;
 
     let cancelled = false;
-    const segments = segmentsOf(fs, selectedId);
+    const segments = segmentsOf(selectedId);
     void readFile(segments).then(stored => {
       if (cancelled) return;
       const content = stored ?? "";
@@ -196,7 +204,7 @@ export function App() {
           return;
         }
 
-        const id = idForPath(message.path);
+        const id = idOf(message.path);
         // Only reconcile files this tab has actually loaded; anything else is
         // read fresh whenever it's next opened.
         if (fsRef.current?.[id]?.content === undefined) return;
@@ -240,7 +248,7 @@ export function App() {
 
   useEffect(() => {
     if (!fs) return;
-    const path = BASE_PATH + (selectedId ? getNodePath(fs, selectedId) : "/");
+    const path = BASE_PATH + (selectedId ? getNodePath(selectedId) : "/");
     if (decodeURIComponent(window.location.pathname) !== path) {
       window.history.replaceState(null, "", path);
     }
@@ -255,7 +263,7 @@ export function App() {
 
   const handleCreate = (parentId: string, type: "file" | "folder") => {
     if (!fs) return;
-    const parent = segmentsOf(fs, parentId);
+    const parent = segmentsOf(parentId);
     void mutate(async () => {
       if (type === "file") await createFile(parent, "untitled.md");
       else await createDirectory(parent, "New Folder");
@@ -264,7 +272,7 @@ export function App() {
 
   const handleDelete = (id: string) => {
     if (!fs) return;
-    const segments = segmentsOf(fs, id);
+    const segments = segmentsOf(id);
     const queued = pending.current.get(id);
     if (queued) clearTimeout(queued.timer);
     pending.current.delete(id);
@@ -275,26 +283,26 @@ export function App() {
 
   const handleRename = (id: string, name: string) => {
     if (!fs) return;
-    const from = segmentsOf(fs, id);
+    const from = segmentsOf(id);
     void mutate(async () => {
       await renameEntry(from, name);
-      // Carry the id across so the editor doesn't remount mid-rename.
-      repath(from, [...from.slice(0, -1), name]);
+      baseContent.current.delete(id);
+      remapSelection(id, idOf([...from.slice(0, -1), name]));
     });
   };
 
   const handleMove = (id: string, newParentId: string) => {
     if (!fs || !canMove(fs, id, newParentId)) return;
-    const from = segmentsOf(fs, id);
-    const to = segmentsOf(fs, newParentId);
+    const from = segmentsOf(id);
     void mutate(async () => {
-      await moveEntry(from, to);
-      repath(from, [...to, from[from.length - 1]!]);
+      await moveEntry(from, segmentsOf(newParentId));
+      baseContent.current.delete(id);
+      remapSelection(id, idOf([...segmentsOf(newParentId), from[from.length - 1]!]));
     });
   };
 
   const handleContentChange = (content: string) => {
-    if (!selectedId || !fs) return;
+    if (!selectedId) return;
     setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
     scheduleWrite(selectedId, content);
   };

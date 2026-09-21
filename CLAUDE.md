@@ -9,8 +9,8 @@ production is a static export (see Deployment below), not this server.
 Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
 (Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
-OPFS into the in-memory record; owns session ids), `fs.ts` (pure queries over
-that record), `merge.ts` (three-way line merge).
+OPFS into the in-memory record), `fs.ts` (pure queries over that record),
+`merge.ts` (three-way line merge).
 
 ## Git workflow
 
@@ -77,23 +77,26 @@ file's text, and a directory tree expresses all four — so `storage.ts` is a
 thin layer over OPFS and nothing else. Whatever is on disk is exactly what the
 app shows, and folders are inspectable and exportable as real directories.
 
-- **Storage speaks paths; the app speaks ids.** Ids exist only in memory
-  (`tree.ts`) and are never written anywhere; they differ between tabs and
-  between reloads, so anything crossing that boundary — BroadcastChannel
-  messages, `storage.ts` calls — uses paths. Everything inside `App.tsx`
-  (pending writes, merge bases) is keyed by id instead, because ids survive
-  renames and paths don't, so none of it needs re-keying when a file moves.
-  `tree.ts`'s `idForPath()` is the single bridge back, and `repath()` carries
-  an id and its descendants across a rename or move — which is what stops the
-  editor remounting while you rename the file you're typing in. Don't
-  reintroduce path-keyed state in the app layer; that mix is what previously
-  forced an O(n) scan to answer "which node is this message about".
-- **A queued write resolves its path when it flushes**, not when it was
-  queued. That's what makes renaming a file you're mid-sentence in safe: the
-  pending text follows to the new name instead of recreating the old one. It
-  also means a write for a file deleted meanwhile is dropped rather than
-  resurrecting it — `segmentsOf` returns `[]` for a node that's gone, which
-  `flushWrite` treats as "nothing to write".
+- **A node's id is its path.** At any instant a file has exactly one path, and
+  `isValidName` forbids `/` in a segment, so the record is keyed by the
+  segments joined with `/` and there is no separate identity to allocate,
+  track or translate. `segmentsOf` is a split, not a walk up the parents;
+  "is this inside that folder" is a prefix test; a BroadcastChannel message's
+  path *is* the key. An earlier version allocated session ids and re-pointed
+  them on every rename — resist adding that back. It bought only a preserved
+  undo stack when renaming the open file, and cost an id registry plus an
+  O(n) scan to answer "which node is this message about".
+- **Structural changes flush queued writes first** (`mutate()` in `App.tsx`).
+  A queued write is keyed by the path it was queued for, so a rename landing
+  mid-debounce would otherwise strand the text at the old name and recreate
+  the file there. Flushing first closes that window outright, which is
+  simpler than trying to follow a path as it moves. `flushWrite` also drops a
+  write whose node has since vanished, so a file deleted in another tab isn't
+  resurrected by a local edit still in flight.
+- **Renaming the open file remounts the editor**, because its id changed;
+  the text is re-read from the new path and Crepe's undo history is lost.
+  Acceptable because the rename input takes focus (`autoFocus`), so the caret
+  has already left the editor before any rename can happen.
 - **Names are stored as typed, not escaped.** OPFS rejects only `""`, `.`,
   `..`, and names containing `/` or `\` (`isValidName`). Spaces, colons,
   leading dots, trailing spaces and non-ASCII are all legal and round-trip
