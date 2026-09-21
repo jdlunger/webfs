@@ -1,4 +1,4 @@
-import { useState, type DragEvent } from "react";
+import { useState, type DragEvent, type ReactNode } from "react";
 import { type FileSystem, type FSNode, ROOT_ID, childrenOf } from "./fs";
 
 interface SidebarProps {
@@ -9,6 +9,8 @@ interface SidebarProps {
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onMove: (id: string, newParentId: string) => void;
+  /** Rendered under the tree — the GitHub sync strip. */
+  footer?: ReactNode;
 }
 
 const DRAG_MIME = "application/x-webfs-node-id";
@@ -94,11 +96,12 @@ export function Sidebar(props: SidebarProps) {
           />
         ))}
       </div>
+      {props.footer}
     </div>
   );
 }
 
-interface TreeNodeProps extends Omit<SidebarProps, "onCreate"> {
+interface TreeNodeProps extends Omit<SidebarProps, "onCreate" | "footer"> {
   node: FSNode;
   depth: number;
 }

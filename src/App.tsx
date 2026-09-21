@@ -21,6 +21,10 @@ import {
   writeFile,
 } from "./storage";
 import { adoptContent, loadTree, projectTree } from "./tree";
+import { SyncPanel } from "./SyncPanel";
+import { useGitHubSync } from "./useGitHubSync";
+import type { SyncResult } from "./sync";
+import { loadConfig } from "./syncConfig";
 
 /** Content saves coalesce over this window rather than firing per keystroke. */
 const WRITE_DEBOUNCE_MS = 400;
@@ -76,6 +80,12 @@ export function App() {
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
 
+  /**
+   * Set once the sync hook exists, which is after the callbacks that want to
+   * nudge it. Calling through a ref keeps those callbacks stable.
+   */
+  const requestSync = useRef<() => void>(() => {});
+
   /** Text as last seen on disk, keyed by path — the base for three-way merges. */
   const baseContent = useRef(new Map<string, string>());
   const pending = useRef(new Map<string, { content: string; timer: ReturnType<typeof setTimeout> }>());
@@ -106,6 +116,7 @@ export function App() {
     if (pending.current.get(id)?.content === queued.content) pending.current.delete(id);
     baseContent.current.set(id, queued.content);
     announce({ kind: "file", path: segmentsOf(id) });
+    requestSync.current();
   }, []);
 
   const scheduleWrite = useCallback(
@@ -151,9 +162,58 @@ export function App() {
       }
       await refreshTree();
       announce({ kind: "tree" });
+      requestSync.current();
     },
     [flushAll, refreshTree],
   );
+
+  /**
+   * Folds what a sync changed on disk back into this tab, the same way a
+   * BroadcastChannel message from another tab would: the text is already
+   * merged and written, so this only has to catch the UI up — and tell the
+   * other tabs, which have no other way to hear about a write this tab made
+   * outside their own edit loop.
+   */
+  const applySyncResult = useCallback(
+    (result: SyncResult) => {
+      for (const { path, content } of result.written) {
+        const id = idOf(path.split("/"));
+        const mine = fsRef.current?.[id]?.content;
+        // A sync reads OPFS at the start and writes it seconds later, so
+        // keystrokes can land in between. They're in memory but not in what
+        // the sync merged, and letting the queued write flush on top would
+        // put the remote change back exactly where it came from. Same
+        // three-way merge the cross-tab path uses, for the same reason.
+        const raced = pending.current.has(id) && mine !== undefined && mine !== content;
+        const next = raced ? mergeText(baseContent.current.get(id) ?? mine!, mine!, content) : content;
+
+        baseContent.current.set(id, content);
+        if (mine !== undefined && next !== mine) {
+          setFs(prev => (prev ? updateFileContent(prev, id, next) : prev));
+          // Crepe only reads its content at construction, so a file open
+          // right now has to be remounted to show what arrived.
+          if (id === selectedRef.current) setExternalEdit(n => n + 1);
+        }
+        // Whatever the merge produced still has to reach disk and the repo.
+        if (raced && next !== content) scheduleWrite(id, next);
+        announce({ kind: "file", path: path.split("/") });
+      }
+      for (const path of result.removed) {
+        const id = idOf(path.split("/"));
+        const queued = pending.current.get(id);
+        if (queued) clearTimeout(queued.timer);
+        pending.current.delete(id);
+        baseContent.current.delete(id);
+        if (id === selectedRef.current) setSelectedId(null);
+      }
+      void refreshTree();
+      announce({ kind: "tree" });
+    },
+    [refreshTree, scheduleWrite],
+  );
+
+  const sync = useGitHubSync({ flush: flushAll, onLocalChanges: applySyncResult });
+  requestSync.current = sync.requestSync;
 
   // Initial load.
   useEffect(() => {
@@ -162,7 +222,9 @@ export function App() {
       return;
     }
     let cancelled = false;
-    void loadTree()
+    // Starter files would otherwise be created on a synced device whose store
+    // is empty simply because it hasn't pulled the repository yet.
+    void loadTree({ seed: loadConfig() === null })
       .then(tree => {
         if (cancelled) return;
         setFs(tree);
@@ -344,6 +406,7 @@ export function App() {
         onDelete={handleDelete}
         onRename={handleRename}
         onMove={handleMove}
+        footer={<SyncPanel sync={sync} />}
       />
       <Editor file={selectedFile} externalEdit={externalEdit} onChange={handleContentChange} />
     </div>

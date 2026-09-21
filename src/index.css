@@ -366,3 +366,274 @@ body {
     font-size: 1.3em;
   }
 }
+
+/* --- GitHub sync ---------------------------------------------------------- */
+
+.sync-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid #2c2c2c;
+  background: #161616;
+  flex-shrink: 0;
+  min-height: 44px;
+}
+
+.sync-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sync-repo {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.sync-repo:hover {
+  color: #fff;
+}
+
+.sync-branch {
+  font-weight: 400;
+  font-size: 11px;
+  color: #777;
+  flex-shrink: 0;
+}
+
+.sync-status {
+  font-size: 11px;
+  color: #777;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An error is the one status worth reading in full, so it wraps instead of
+   being clipped to the sidebar's width like the routine one-liners. */
+.sync-status-error {
+  color: #e2857a;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.sync-now {
+  background: #2a2a2a;
+  color: #ccc;
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sync-now:hover:not(:disabled) {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.sync-now:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sync-connect {
+  flex: 1;
+  background: #2a2a2a;
+  color: #bbb;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sync-connect:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+/* --- modal ---------------------------------------------------------------- */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 16px;
+}
+
+.modal {
+  background: #202020;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 20px;
+  width: min(440px, 100%);
+  max-height: 90dvh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #ddd;
+}
+
+.modal h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.modal-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8a8a8a;
+}
+
+.modal-hint code {
+  background: #2a2a2a;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.modal label {
+  display: block;
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 12px;
+}
+
+.modal label input[type="text"],
+.modal label input[type="password"],
+.modal label input:not([type]) {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  background: #141414;
+  color: #eee;
+  border: 1px solid #383838;
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-size: 14px;
+  outline: none;
+}
+
+.modal label input:focus {
+  border-color: #4a90e2;
+}
+
+.modal-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.modal-error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e2857a;
+}
+
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modal-spacer {
+  flex: 1;
+}
+
+.modal-actions button {
+  background: #2f2f2f;
+  color: #ddd;
+  border: none;
+  border-radius: 5px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modal-actions button:hover:not(:disabled) {
+  background: #3d3d3d;
+}
+
+.modal-primary {
+  background: #3b6ea5 !important;
+  color: #fff;
+}
+
+.modal-primary:hover:not(:disabled) {
+  background: #4a83c2 !important;
+}
+
+.modal-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.modal-danger {
+  color: #e2857a !important;
+}
+
+@media (max-width: 768px) {
+  /* 16px keeps iOS Safari from zooming the viewport on focus. */
+  .modal label input {
+    font-size: 16px;
+    padding: 10px 12px;
+  }
+
+  /* The mobile drawer already carries the bottom safe-area padding. */
+  .sync-bar {
+    padding: 10px 14px;
+    min-height: 56px;
+  }
+
+  .sync-repo {
+    font-size: 14px;
+  }
+
+  .sync-status {
+    font-size: 12px;
+  }
+
+  .sync-now {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
+
+  .sync-connect {
+    padding: 12px 10px;
+    font-size: 14px;
+  }
+
+  .modal-actions button {
+    padding: 12px 16px;
+    font-size: 15px;
+  }
+}

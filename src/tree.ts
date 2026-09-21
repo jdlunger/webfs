@@ -56,10 +56,17 @@ const SEED: Array<{ dir: string; files: Array<{ name: string; body: string }> }>
   { dir: "Projects", files: [{ name: "ideas.md", body: "# Project ideas\n\n1. \n2. \n3. " }] },
 ];
 
-/** Reads the tree, writing starter content first if the store is empty. */
-export async function loadTree(): Promise<FileSystem> {
+/**
+ * Reads the tree, writing starter content first if the store is empty.
+ *
+ * `seed: false` is how a device with GitHub sync configured starts up: its
+ * store is empty because the files live in the repository, and seeding would
+ * push three starter notes into someone's established notes repo (or collide
+ * with files already at those paths) before the first sync could fill it.
+ */
+export async function loadTree({ seed = true }: { seed?: boolean } = {}): Promise<FileSystem> {
   let entries = await walk();
-  if (entries.length === 0) {
+  if (entries.length === 0 && seed) {
     for (const { dir, files } of SEED) {
       const dirName = await createDirectory([], dir);
       for (const { name, body } of files) {

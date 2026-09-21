@@ -150,11 +150,105 @@ app shows, and folders are inspectable and exportable as real directories.
   no UX thought applied. Worth replacing with inline validation in the rename
   input. Both cases must stay handled: unhandled, a rename to a taken or
   illegal name just silently does nothing.
+- **OPFS is the only *local* store**, but no longer the only replica: a
+  GitHub branch can hold the same tree (see GitHub sync below). OPFS stays the
+  source of truth for what the app shows; sync reconciles into it and reads
+  back out of it, never around it.
 - `bun test` covers `merge.ts` (`merge.test.ts`) and `tree.ts`
   (`tree.test.ts`: projection, id stability across rename/move, name
   validation). OPFS itself can't run headless, so seeding, rename, folder
   moves, two-tab merging and offline were verified by driving real Chromium
   tabs — not in CI, so re-run by hand after touching this area.
+
+## GitHub sync (two-way, personal access token)
+
+A branch in a GitHub repository is a second replica of the store, kept in
+step with OPFS in both directions. `github.ts` (REST client), `sync.ts` (the
+algorithm), `syncConfig.ts` (localStorage), `useGitHubSync.ts` (when it runs)
+and `SyncPanel.tsx` (the strip at the foot of the sidebar).
+
+- **It's the same three-way model as `merge.ts`**, with the other tab replaced
+  by a branch: `base` is a path → blob-sha snapshot of what was last in sync,
+  `local` is OPFS now, `remote` is the branch now. `planSync` is pure and is
+  where every decision lives; read it before changing anything here. Two-way
+  sync without a base can only guess which side changed.
+- **Nothing is compared by content.** Git's blob sha *is* a content hash, a
+  recursive tree listing hands one over for every remote file, and
+  `gitBlobSha` computes the same hash locally (sha1 of `blob <len>\0` + the
+  UTF-8 bytes, verified against `git hash-object` in `sync.test.ts`). A sync
+  with nothing to do costs one tree listing and downloads no file contents.
+- **Deletion never beats an edit.** A file deleted on one side but edited on
+  the other comes back. An unwanted file is one keystroke to remove; lost
+  writing is gone for good.
+- **Two files that share only a path are both kept**, the remote one landing
+  next to the local one as `notes (github).md`. There's no honest merge
+  without a shared base, and silently preferring a side would drop writing
+  that exists nowhere else. The three-way merge (via `mergeText`) is only used
+  when a base *is* known — and it fetches the base blob back from the repo,
+  which is reachable precisely because the last sync pushed it.
+- **An empty store with a non-empty base means lost data, not deletion.**
+  Safari evicts unused site storage, and OPFS can go without localStorage
+  going with it; taken literally that reads as "delete everything on GitHub".
+  The base is dropped instead and the device refills from the repository.
+  `syncOnce` still refuses outright to push an empty tree, as a backstop.
+- **A push sends the complete tree**, so deletions are just absences and no
+  separate bookkeeping tracks them. Entries webfs can't represent (symlinks,
+  submodules) are carried through verbatim — without that, the push would
+  delete them. Blobs already present remotely are referenced by sha, so only
+  genuinely new text is uploaded.
+- **Non-text files are never touched.** A blob that isn't valid UTF-8 (or
+  holds a NUL) is reported as untouchable by `decodeText` rather than decoded
+  leniently, because U+FFFD replacements would be written back on the next
+  push. They're carried, not pulled, and reported as skipped.
+- **The git-object endpoints, not `/contents`.** Sync needs the whole tree in
+  one request to diff it, and needs a set of changes to land as one commit;
+  `/contents` is a request per file and a commit per file.
+- **The ref update is never forced.** The commit parents on the head that was
+  read, so a non-fast-forward means another writer moved the branch; the hook
+  retries the whole pass once, which re-reads everything.
+- **A branch that doesn't exist is forked from the default branch**, so
+  pointing webfs at a new branch of an existing repo starts from that repo's
+  files rather than orphaning them. A repo with no commits at all gets an
+  initial commit with no parents.
+- **The token lives in localStorage, not OPFS** — OPFS is what gets pushed, so
+  a token stored there would be committed to the repository it grants access
+  to. That still leaves a token readable by any script on this origin, and
+  there's no way around it for a backend-less app: no server, so no session
+  cookie to hide behind and no OAuth secret that could stay secret. The
+  settings dialog says so.
+- **Seeding is skipped when sync is configured** (`loadTree({ seed })`). A
+  synced device's store is empty because it hasn't pulled yet, and seeding
+  would push three starter notes into someone's established notes repo.
+- **A sync is serialized across tabs** with a Web Lock (`ifAvailable`, so a
+  second tab skips rather than queues), flushes pending editor writes first
+  for the same reason `mutate()` does, and applies what it changed through
+  `applySyncResult` in `App.tsx` — which bumps `externalEdit` for the open
+  file and announces on the BroadcastChannel, since other tabs have no other
+  way to hear about a write made outside their own edit loop.
+- **Timing:** on load, 4s after edits settle, every 60s, on tab-visible and on
+  `online`, plus the button. Auto-sync is a checkbox; the button always works.
+- **Keystrokes that land mid-sync are merged, not dropped.** A sync reads OPFS
+  at the start and writes it back seconds later; anything typed in between is
+  in memory but not in what it merged, and letting the queued write flush on
+  top would put the remote change back where it came from. `applySyncResult`
+  runs the same `mergeText` the cross-tab path does and re-queues the result.
+  For the same class of reason, `opfsLocalFs.write` retries and then *throws*
+  on `"busy"` rather than ignoring it: a base recording text that never
+  reached disk would push the old version on the next pass.
+- **Two things git can't represent, and webfs doesn't work around.** An empty
+  folder has no place in a tree, so it exists on this device only and won't
+  appear on another. And a path that is a file on one side and a folder on the
+  other can't be a single tree entry: GitHub rejects the push with a 422, which
+  surfaces in the status strip. Both are rare enough to leave alone; renaming
+  one side fixes the second.
+- `bun test` covers the algorithm against an in-memory branch and store
+  (`sync.test.ts`) and the REST wiring against a stubbed `fetch`
+  (`github.test.ts`). What neither covers is the two touching real OPFS and a
+  real editor, which was verified by driving Chromium against an intercepted
+  `api.github.com`: first sync both ways, a typed edit reaching the repo, a
+  remote edit re-rendering in the open editor, a two-sided edit merging,
+  deletions propagating, a second device converging, and a wiped device
+  refilling. Re-run that by hand after touching this area.
 
 ## Deployment (GitHub Pages)
 
