@@ -88,6 +88,36 @@ export function parseRepository(input: string): { owner: string; repo: string } 
   return { owner: match[1]!, repo: match[2]! };
 }
 
+/**
+ * A link to GitHub's token page with the permission already chosen.
+ *
+ * The fine-grained token form takes a template URL, so everything webfs knows
+ * can be filled in for the user: `contents=write` (which implies read, and
+ * GitHub adds `metadata:read` itself), the resource owner, a name and an
+ * expiry. What it has no parameter for is the *repository* — only
+ * `target_name`, its owner — so the dialog tells the user to pick it there
+ * rather than pretending the link does everything.
+ *
+ * Expiry is set explicitly because the page's own default is 30 days, which
+ * would quietly stop sync working in a month; a year is a starting point the
+ * user can change on the page itself.
+ *
+ * https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+ */
+export function tokenSetupUrl(repository: string): string {
+  const parsed = parseRepository(repository);
+  const url = new URL("https://github.com/settings/personal-access-tokens/new");
+  url.searchParams.set("name", "webfs");
+  url.searchParams.set(
+    "description",
+    parsed ? `Two-way file sync between webfs and ${parsed.owner}/${parsed.repo}.` : "Two-way file sync with webfs.",
+  );
+  url.searchParams.set("contents", "write");
+  url.searchParams.set("expires_in", "365");
+  if (parsed) url.searchParams.set("target_name", parsed.owner);
+  return url.href;
+}
+
 function SyncSettings({ sync, onClose }: { sync: GitHubSync; onClose: () => void }) {
   const existing = sync.config;
   const [repository, setRepository] = useState(existing ? `${existing.owner}/${existing.repo}` : "");
@@ -96,9 +126,9 @@ function SyncSettings({ sync, onClose }: { sync: GitHubSync; onClose: () => void
   const [auto, setAuto] = useState(existing?.auto ?? true);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const parsed = parseRepository(repository);
 
   const save = async () => {
-    const parsed = parseRepository(repository);
     if (!parsed) {
       setError("Enter the repository as owner/name, or paste its GitHub URL.");
       return;
@@ -163,9 +193,16 @@ function SyncSettings({ sync, onClose }: { sync: GitHubSync; onClose: () => void
           />
         </label>
         <p className="modal-hint">
-          A fine-grained token with read and write access to <em>Contents</em> on this repository is enough (a classic
-          token needs the <code>repo</code> scope). It's stored in this browser's local storage on this device only —
-          treat it like a password, and revoke it if you lose the device.
+          <a className="modal-link" href={tokenSetupUrl(repository)} target="_blank" rel="noopener noreferrer">
+            Create one on GitHub ↗
+          </a>{" "}
+          — that opens the token page with <em>Contents: Read and write</em> and a one-year expiry already filled in.
+          Pick {parsed ? <code>{parsed.repo}</code> : "the repository"} yourself under <em>Repository access</em>;
+          GitHub has no link parameter for that one.
+        </p>
+        <p className="modal-hint">
+          The token is stored in this browser's local storage on this device only — treat it like a password, and
+          revoke it if you lose the device. A classic token with the <code>repo</code> scope works too.
         </p>
 
         <label className="modal-checkbox">

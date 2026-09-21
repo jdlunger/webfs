@@ -216,6 +216,18 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   there's no way around it for a backend-less app: no server, so no session
   cookie to hide behind and no OAuth secret that could stay secret. The
   settings dialog says so.
+- **The dialog links to a pre-filled token page** (`tokenSetupUrl` in
+  `SyncPanel.tsx`). GitHub's fine-grained token form takes a template URL, so
+  `contents=write` (which implies read; GitHub adds `metadata:read` itself),
+  `target_name`, `name` and `expires_in` are all filled in from what the
+  dialog already knows. Two things to keep in mind before editing it: there
+  is *no* parameter for the repository — only `target_name`, its owner — so
+  the dialog says to pick that on the page rather than implying the link does
+  everything; and the expiry is set explicitly because the page's own default
+  is 30 days, which would quietly stop sync working in a month. These are
+  GitHub's parameter names, not ours, so a renamed one fails silently (an
+  empty form, no error) — `syncPanel.test.ts` pins them. See
+  https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
 - **Seeding is skipped when sync is configured** (`loadTree({ seed })`). A
   synced device's store is empty because it hasn't pulled yet, and seeding
   would push three starter notes into someone's established notes repo.
@@ -242,8 +254,9 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   surfaces in the status strip. Both are rare enough to leave alone; renaming
   one side fixes the second.
 - `bun test` covers the algorithm against an in-memory branch and store
-  (`sync.test.ts`) and the REST wiring against a stubbed `fetch`
-  (`github.test.ts`). What neither covers is the two touching real OPFS and a
+  (`sync.test.ts`), the REST wiring against a stubbed `fetch`
+  (`github.test.ts`), and the dialog's two pure pieces — repository parsing
+  and the token link — in `syncPanel.test.ts`. What neither covers is the two touching real OPFS and a
   real editor, which was verified by driving Chromium against an intercepted
   `api.github.com`: first sync both ways, a typed edit reaching the repo, a
   remote edit re-rendering in the open editor, a two-sided edit merging,

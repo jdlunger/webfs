@@ -507,6 +507,16 @@ body {
   color: #8a8a8a;
 }
 
+.modal-link {
+  color: #6aa9e9;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.modal-link:hover {
+  text-decoration: underline;
+}
+
 .modal-hint code {
   background: #2a2a2a;
   border-radius: 3px;
