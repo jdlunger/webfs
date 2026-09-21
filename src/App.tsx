@@ -6,6 +6,7 @@ import { Editor } from "./Editor";
 import { BASE_PATH } from "./basePath";
 import { mergeText } from "./merge";
 import {
+  InvalidNameError,
   NameTakenError,
   announce,
   createDirectory,
@@ -130,6 +131,9 @@ export function App() {
       } catch (err) {
         if (err instanceof NameTakenError) {
           window.alert(`"${err.message}" already exists in that folder.`);
+        } else if (err instanceof InvalidNameError) {
+          // Without this the rename just silently does nothing.
+          window.alert(`"${err.message}" isn't a usable name — it can't be empty or contain a slash.`);
         } else {
           console.error(err);
         }

@@ -71,13 +71,11 @@ hamburger button. Notes learned the hard way:
 
 ## Storage (OPFS) and multiple tabs
 
-**OPFS is the only store, and the directory tree is the filesystem.** There is
-no index, no metadata file, no localStorage fallback. Everything webfs
-persists is a name, a type, a position in the hierarchy or a file's text, and
-a directory tree expresses all four — so `storage.ts` is a thin layer over
-OPFS and nothing else. Whatever is on disk is exactly what the app shows;
-there's no index to drift out of sync, and folders are inspectable and
-exportable as real directories.
+**OPFS is the only store, and the directory tree is the filesystem.**
+Everything webfs persists is a name, a type, a position in the hierarchy or a
+file's text, and a directory tree expresses all four — so `storage.ts` is a
+thin layer over OPFS and nothing else. Whatever is on disk is exactly what the
+app shows, and folders are inspectable and exportable as real directories.
 
 - **Identity is the path.** Ids exist only in memory (`tree.ts`) and are never
   written anywhere; they differ between tabs and between reloads. Anything
@@ -93,9 +91,9 @@ exportable as real directories.
   first: under `LC_CTYPE=POSIX` Chromium reports a bogus `TypeMismatchError`.
 - **Two entries can't share a name in a folder** — the filesystem forbids it.
   `createFile`/`createDirectory` therefore uniquify ("notes 2.md") and return
-  the name actually used; always use the returned name. Creating the same
-  folder twice uniquifies rather than reusing it, which is how a stray empty
-  "Notes 2" got seeded once — group by directory when seeding.
+  the name actually used; always use the returned name. Note this applies to
+  folders too: creating the same folder twice yields a second, empty one
+  rather than reusing it, so `loadTree`'s seed groups files by directory.
 - **Directories have no `move()`** (files do, and it's used). Folder moves are
   a recursive copy *then* a delete, deliberately in that order so an
   interrupted move leaves the original intact — a duplicate is recoverable, a
@@ -106,9 +104,8 @@ exportable as real directories.
   `LOCK_TIMEOUT_MS` (750ms). Reads never lock, so a file another tab is
   mid-save is still instantly viewable. A write that loses the race returns
   `"busy"` and `App.tsx` retries with the text still queued. Structural
-  changes aren't locked: they're single OPFS calls, and there's no shared
-  index for them to race over — which is the main thing having no `tree.json`
-  buys. Two tabs restructuring concurrently no longer clobber each other.
+  changes aren't locked: they're single OPFS calls with no shared index to
+  race over, so two tabs restructuring concurrently don't clobber each other.
 - **Content loads lazily**, when a file is opened. `FSNode.content` being
   `undefined` means "not read yet", not "empty" — `Editor.tsx` renders a
   loading state for that case. It has to: Crepe reads `defaultValue` once at
@@ -128,17 +125,17 @@ exportable as real directories.
   lines it changed; both apply when they don't overlap, local wins when they
   do. No real diff, no conflict markers. It is *stable* — merging a merged
   result changes nothing — which is what stops two tabs ping-ponging writes.
-- **No migration, and no fallback store.** Nothing is imported from the old
-  `webfs:filesystem` blob. And because there's no second backend, a browser
-  with OPFS but without `createWritable` gets an explicit error screen rather
-  than silent degradation (`opfsAvailable()` gates the app). **This has not
-  been verified on real iOS Safari — if `createWritable` is missing there, the
-  app does not work on that device.** That's the known risk of the
-  single-store design; check `opfsAvailable()` on device before assuming.
-- **Name collisions surface as a `window.alert`** (`mutate()` in `App.tsx`
-  catches `NameTakenError`). That's a placeholder, not a considered design —
-  it's the one piece of this that hasn't had UX thought applied, and it blocks
-  the main thread. Worth replacing with inline validation in the rename input.
+- **`opfsAvailable()` gates the whole app.** OPFS alone isn't enough — writing
+  needs `createWritable`, which some browsers with OPFS lack. With a single
+  store there's nothing to fall back to, so the app shows an error screen
+  instead. **This has not been verified on real iOS Safari; if
+  `createWritable` is missing there, the app does not work on that device.**
+- **Bad names surface as a `window.alert`** (`mutate()` in `App.tsx` catches
+  `NameTakenError` and `InvalidNameError`). That's a placeholder, not a
+  considered design — it blocks the main thread and is the one piece here with
+  no UX thought applied. Worth replacing with inline validation in the rename
+  input. Both cases must stay handled: unhandled, a rename to a taken or
+  illegal name just silently does nothing.
 - `bun test` covers `merge.ts` (`merge.test.ts`) and `tree.ts`
   (`tree.test.ts`: projection, id stability across rename/move, name
   validation). OPFS itself can't run headless, so seeding, rename, folder
@@ -210,11 +207,10 @@ local dev — not left for the SPA wildcard route or Bun's HTML bundler:
   manifest to read. It scrapes them instead: on install it fetches the shell
   HTML and pulls the `<script src>` / `<link href>` URLs out of it with a
   regex. That scrape is what makes *one* online visit enough to go offline.
-  Caching each asset lazily on first fetch (the obvious cheaper option, and
-  what this did originally) cannot cover a first visit — the page's own
-  chunk requests happen before the worker has claimed the client, so nothing
-  intercepts them, and the app needs a *second* online load before it
-  survives going offline.
+  Caching each asset lazily on first fetch — the obvious cheaper option —
+  cannot cover a first visit: the page's own chunk requests happen before the
+  worker has claimed the client, so nothing intercepts them, and the app would
+  need a *second* online load before it survived going offline.
 - Navigations are network-first (so an online load always gets the current
   deploy) and are cached under the shell URL, never the requested URL: every
   client-side route renders the same document. A successful navigation also

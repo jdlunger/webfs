@@ -1,8 +1,8 @@
 /**
- * A thin layer over OPFS. The directory tree *is* the filesystem — there is
- * no index, no metadata file and no second store. Everything webfs persists
- * is a name, a type, a position in the hierarchy or a file's text, and a
- * directory tree expresses all four natively.
+ * A thin layer over OPFS. The directory tree *is* the filesystem: everything
+ * webfs persists is a name, a type, a position in the hierarchy or a file's
+ * text, and a directory tree expresses all four natively. Whatever is on disk
+ * is exactly what the app shows.
  *
  * Consequences worth knowing:
  * - Node identity is the path. Ids exist only in memory (see tree.ts) and are
@@ -10,8 +10,6 @@
  * - Two entries can't share a name within a folder, because the filesystem
  *   won't allow it. `createFile`/`createDirectory` therefore return the name
  *   actually used, which may be uniquified.
- * - Nothing here can be lost to a stale index, and the store is
- *   self-describing: whatever is on disk is exactly what the app shows.
  *
  * Locks are taken only around file writes, and give up quickly, so reading a
  * file another tab is saving never blocks.
@@ -21,10 +19,9 @@ export type Path = readonly string[];
 export type WriteResult = "ok" | "busy";
 
 /** How long a save waits on another tab before deferring. */
-export const LOCK_TIMEOUT_MS = 750;
+const LOCK_TIMEOUT_MS = 750;
 
-/** Thrown when the browser can't back this app at all — see opfsAvailable. */
-export class StorageUnavailableError extends Error {}
+/** Both are caught by name in App.tsx to explain the failure to the user. */
 export class NameTakenError extends Error {}
 export class InvalidNameError extends Error {}
 
@@ -55,7 +52,7 @@ function requireValid(name: string): void {
 }
 
 async function rootDir(): Promise<FileSystemDirectoryHandle> {
-  if (!opfsAvailable()) throw new StorageUnavailableError("OPFS with createWritable is unavailable");
+  if (!opfsAvailable()) throw new Error("OPFS with createWritable is unavailable");
   return navigator.storage.getDirectory();
 }
 
