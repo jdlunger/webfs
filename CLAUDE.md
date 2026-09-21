@@ -110,7 +110,10 @@ exportable as real directories.
   index for them to race over — which is the main thing having no `tree.json`
   buys. Two tabs restructuring concurrently no longer clobber each other.
 - **Content loads lazily**, when a file is opened. `FSNode.content` being
-  `undefined` means "not read yet", not "empty".
+  `undefined` means "not read yet", not "empty" — `Editor.tsx` renders a
+  loading state for that case. It has to: Crepe reads `defaultValue` once at
+  construction and never again, so mounting before the text arrives would
+  leave an empty document on screen that the real content never reaches.
 - **Saves are debounced** (`WRITE_DEBOUNCE_MS`, 400ms) and flushed on
   `pagehide`/hide. Best-effort: writes are async, so a page torn down
   instantly can still lose the last few hundred ms.
@@ -132,10 +135,15 @@ exportable as real directories.
   been verified on real iOS Safari — if `createWritable` is missing there, the
   app does not work on that device.** That's the known risk of the
   single-store design; check `opfsAvailable()` on device before assuming.
-- `bun test` covers `merge.ts` and `tree.ts` (projection, id stability across
-  rename/move, name validation). OPFS itself can't run headless, so seeding,
-  rename, folder moves, two-tab merging and offline were verified by driving
-  real Chromium tabs — not in CI, so re-run by hand after touching this area.
+- **Name collisions surface as a `window.alert`** (`mutate()` in `App.tsx`
+  catches `NameTakenError`). That's a placeholder, not a considered design —
+  it's the one piece of this that hasn't had UX thought applied, and it blocks
+  the main thread. Worth replacing with inline validation in the rename input.
+- `bun test` covers `merge.ts` (`merge.test.ts`) and `tree.ts`
+  (`tree.test.ts`: projection, id stability across rename/move, name
+  validation). OPFS itself can't run headless, so seeding, rename, folder
+  moves, two-tab merging and offline were verified by driving real Chromium
+  tabs — not in CI, so re-run by hand after touching this area.
 
 ## Deployment (GitHub Pages)
 
