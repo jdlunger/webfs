@@ -153,6 +153,16 @@ export class GitHubRemote implements Remote {
     try {
       response = await fetch(`${API}${path}`, {
         method: init?.method ?? "GET",
+        // Never let the browser's HTTP cache answer. GitHub sends
+        // `cache-control: private, max-age=60` on API reads, so a GET of the
+        // branch head can come back up to a minute stale — and a stale head
+        // is the one thing this client must not have: the push parents its
+        // commit on what the read returned, so an out-of-date sha makes the
+        // ref update a non-fast-forward, which GitHub rejects with 422
+        // ("Update is not a fast forward"). Retrying can't help while the
+        // cache keeps serving the same stale answer; the retry has to reach
+        // the network to see the branch that actually moved.
+        cache: "no-store",
         headers: {
           accept: "application/vnd.github+json",
           authorization: `Bearer ${this.credentials.token}`,

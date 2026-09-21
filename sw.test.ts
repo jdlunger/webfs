@@ -70,9 +70,13 @@ class FakeNetwork {
   routes = new Map<string, { body: string; type: string }>();
   requested: string[] = [];
 
-  fetch = async (input: Request | string) => {
+  /** Every fetch the worker made, with the cache mode it asked for. */
+  calls: Array<{ url: string; cache?: string }> = [];
+
+  fetch = async (input: Request | string, init?: RequestInit) => {
     const url = urlOf(input);
     this.requested.push(url);
+    this.calls.push({ url, cache: init?.cache });
     if (!this.online) throw new TypeError("Failed to fetch");
 
     const hit = this.routes.get(url);
@@ -141,7 +145,13 @@ beforeEach(() => {
   net.routes.set(`${BASE}404.html`, { body: "<html>redirecting</html>", type: "text/html" });
 });
 
-const cached = async () => [...(await cacheStorage.open("webfs-shell-v2")).entries.keys()].sort();
+// Read from sw.js rather than hardcoded: bumping CACHE_NAME is a routine,
+// deliberate act, and it shouldn't take four unrelated tests down with it.
+const CACHE_NAME = (await Bun.file(new URL("./public/sw.js", import.meta.url)).text()).match(
+  /CACHE_NAME = "([^"]+)"/,
+)![1]!;
+
+const cached = async () => [...(await cacheStorage.open(CACHE_NAME)).entries.keys()].sort();
 
 test("install caches the hashed chunks the shell references, not just the shell", async () => {
   const sw = await loadWorker(net, cacheStorage);
@@ -261,12 +271,47 @@ test("install survives assets that fail to fetch", async () => {
 });
 
 test("activate drops caches left by earlier worker versions", async () => {
-  const stale = await cacheStorage.open("webfs-shell-v2");
+  const stale = await cacheStorage.open("webfs-shell-v1");
   await stale.put(`${BASE}chunk-old.js`, new Response("old"));
 
   const sw = await loadWorker(net, cacheStorage);
   await sw.install();
   await sw.activate();
 
-  expect(await cacheStorage.keys()).toEqual(["webfs-shell-v2"]);
+  expect(await cacheStorage.keys()).toEqual([CACHE_NAME]);
+});
+
+test("a navigation revalidates the shell instead of trusting the HTTP cache", async () => {
+  const sw = await loadWorker(net, cacheStorage);
+  await sw.install();
+  await sw.activate();
+
+  net.calls.length = 0;
+  await sw.navigate(BASE);
+
+  // The worker's own fetch is not covered by a hard reload in the page, and
+  // GitHub Pages serves the shell with max-age=600. Without an explicit
+  // revalidation a deploy can stay invisible, which is exactly how someone
+  // ended up stuck on a previous build with no way to shift it.
+  const shellCall = net.calls.find(call => call.url === BASE);
+  expect(shellCall).toBeDefined();
+  expect(shellCall!.cache).toBe("no-cache");
+});
+
+test("a redeploy is picked up on the next online navigation", async () => {
+  const sw = await loadWorker(net, cacheStorage);
+  await sw.install();
+  await sw.activate();
+  expect(await (await sw.asset(`${BASE}chunk-aaa.js`))!.text()).toBe("console.log('v1')");
+
+  // Ship a new build: a different chunk hash, as build.ts produces.
+  net.routes.set(BASE, { body: shellHtml("chunk-ccc.js", "chunk-bbb.css"), type: "text/html" });
+  net.routes.set(`${BASE}chunk-ccc.js`, { body: "console.log('v2')", type: "text/javascript" });
+
+  const page = await sw.navigate(BASE);
+  expect(await page!.text()).toContain("chunk-ccc.js");
+
+  // The new chunk is cached and the superseded one pruned, within one visit.
+  net.online = false;
+  expect(await (await sw.asset(`${BASE}chunk-ccc.js`))!.text()).toBe("console.log('v2')");
 });

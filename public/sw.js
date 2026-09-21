@@ -15,7 +15,11 @@
 // deploys don't need it — the browser re-checks sw.js byte-for-byte on its
 // own, and any navigation made while online re-scrapes the shell and tops up
 // (and prunes) the cache for the newly-hashed chunks.
-const CACHE_NAME = "webfs-shell-v2";
+//
+// v3: navigations revalidate (see handleNavigate). The bump is deliberate
+// here rather than incidental — it makes this worker install fresh, which is
+// what unsticks anyone already holding a stale shell from before the fix.
+const CACHE_NAME = "webfs-shell-v3";
 
 const SHELL_URL = new URL("./", self.location).href;
 const SHELL_PATH = new URL(SHELL_URL).pathname;
@@ -117,7 +121,14 @@ self.addEventListener("activate", (event) => {
 async function handleNavigate(request) {
   const cache = await caches.open(CACHE_NAME);
   try {
-    const response = await fetch(request);
+    // `cache: "no-cache"` revalidates against the server instead of letting
+    // the browser's HTTP cache answer. GitHub Pages serves index.html with
+    // max-age=600, and this fetch is the *worker's* — a hard reload in the
+    // page reloads the page, not the worker's own requests — so without this
+    // a deploy stays invisible for up to ten minutes and someone sitting on
+    // the previous build has no way to shift it. Network-first is only
+    // network-first if it actually reaches the network.
+    const response = await fetch(request, { cache: "no-cache" });
     if (response.ok) await cacheShell(cache, response);
     return response;
   } catch (err) {

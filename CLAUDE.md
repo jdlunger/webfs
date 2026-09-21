@@ -231,6 +231,14 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   sends. The empty-repo fakes — in that file and in the browser run — refuse
   everything the real API refuses, which is the only reason the second half
   of this bug (the write path) was caught rather than shipped again.
+- **Every API call sets `cache: "no-store"`.** GitHub sends
+  `cache-control: private, max-age=60` on reads, so the browser will happily
+  answer a branch-head GET with a sha up to a minute old — and a stale head
+  is the one thing this client can't have, because the push parents its
+  commit on whatever that read returned. An out-of-date parent makes the ref
+  update a non-fast-forward, which comes back as 422 "Update is not a fast
+  forward", and the retry can't clear it while the cache keeps serving the
+  same stale answer.
 - **GitHub's own message is always appended to a failure.** The canned
   summaries are ours and they get stale; `message` is GitHub's and it is the
   only thing that identifies an unexpected failure. The 409 above reached a
@@ -359,7 +367,15 @@ local dev — not left for the SPA wildcard route or Bun's HTML bundler:
   worker has claimed the client, so nothing intercepts them, and the app would
   need a *second* online load before it survived going offline.
 - Navigations are network-first (so an online load always gets the current
-  deploy) and are cached under the shell URL, never the requested URL: every
+  deploy) **and fetch with `cache: "no-cache"`**, without which they aren't
+  really network-first at all: Pages serves `index.html` with `max-age=600`,
+  and this fetch is the *worker's*, which a hard reload in the page does not
+  bypass. That combination stranded someone on the previous build with no way
+  to shift it — ctrl-shift-R included. `sw.test.ts` records the cache mode of
+  every fetch the worker makes, and the test file reads `CACHE_NAME` out of
+  `sw.js` rather than hardcoding it, so a deliberate bump doesn't take four
+  unrelated tests down with it. Navigations are cached under the shell URL,
+  never the requested URL: every
   client-side route renders the same document. A successful navigation also
   re-scrapes the shell, which is what picks up newly-hashed chunks after a
   deploy and prunes the previous deploy's — again within one online visit.

@@ -15,6 +15,7 @@ interface Call {
   path: string;
   body: any;
   headers: Record<string, string>;
+  cache?: RequestCache;
 }
 
 const realFetch = globalThis.fetch;
@@ -33,6 +34,7 @@ function stubFetch(routes: Record<string, unknown>): Call[] {
       path,
       body: init.body ? JSON.parse(init.body as string) : undefined,
       headers: init.headers as Record<string, string>,
+      cache: init.cache,
     });
 
     const route = routes[`${method} ${path}`];
@@ -254,6 +256,24 @@ test("a branch name with slashes reaches the right ref", async () => {
   await remote.readTree().catch(() => {});
   // The slash inside the branch name stays a path separator; encoding it 404s.
   expect(calls[0]!.path).toBe("/repos/someone/notes/git/ref/heads/notes/phone");
+});
+
+test("API reads never come from the browser's HTTP cache", async () => {
+  const calls = stubFetch({
+    "GET /repos/someone/notes/git/ref/heads/main": { object: { sha: "c" } },
+    "GET /repos/someone/notes/git/commits/c": { tree: { sha: "t" } },
+    "GET /repos/someone/notes/git/trees/t?recursive=1": { tree: [] },
+  });
+
+  await new GitHubRemote(credentials).readTree();
+
+  // GitHub sends `cache-control: private, max-age=60`, so a cached branch
+  // head can be a minute old. The push parents its commit on whatever this
+  // read returned, and a stale parent makes the ref update a non-fast-forward
+  // — a 422 that retrying cannot clear, because the retry reads the same
+  // stale answer.
+  expect(calls.length).toBeGreaterThan(0);
+  for (const call of calls) expect(call.cache).toBe("no-store");
 });
 
 test("a failure carries GitHub's own words, not just our summary of them", async () => {
