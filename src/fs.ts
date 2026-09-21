@@ -62,14 +62,20 @@ export function canMove(fs: FileSystem, id: string, newParentId: string): boolea
   return !isDescendant(fs, id, newParentId);
 }
 
-export function getNodePath(fs: FileSystem, id: string): string {
-  const parts: string[] = [];
+/** Storage path of a node, as raw name segments. */
+export function segmentsOf(fs: FileSystem, id: string): string[] {
+  const segments: string[] = [];
   let cursor: FSNode | undefined = fs[id];
   while (cursor && cursor.id !== ROOT_ID) {
-    parts.unshift(cursor.name);
+    segments.unshift(cursor.name);
     cursor = cursor.parentId ? fs[cursor.parentId] : undefined;
   }
-  return "/" + parts.map(encodeURIComponent).join("/");
+  return segments;
+}
+
+/** The same path, encoded for the URL bar. */
+export function getNodePath(fs: FileSystem, id: string): string {
+  return "/" + segmentsOf(fs, id).map(encodeURIComponent).join("/");
 }
 
 export function findNodeByPath(fs: FileSystem, path: string): FSNode | null {

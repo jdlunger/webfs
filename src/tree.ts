@@ -11,7 +11,7 @@
  * Ids differ between tabs and between reloads. Anything crossing that boundary
  * — BroadcastChannel messages, storage calls — uses paths.
  */
-import { ROOT_ID, type FileSystem, type FSNode, type NodeType } from "./fs";
+import { ROOT_ID, type FileSystem, type NodeType } from "./fs";
 import { createDirectory, createFile, walk, writeFile, type WalkEntry } from "./storage";
 
 const SEP = "\u0000";
@@ -20,7 +20,12 @@ const keyOf = (path: readonly string[]) => path.join(SEP);
 let counter = 0;
 const idsByPath = new Map<string, string>();
 
-function idForPath(path: readonly string[]): string {
+/**
+ * The one bridge from a storage path back to an id — used when another tab
+ * announces a write, since messages carry paths and everything in the app
+ * layer is keyed by id.
+ */
+export function idForPath(path: readonly string[]): string {
   if (path.length === 0) return ROOT_ID;
   const key = keyOf(path);
   let id = idsByPath.get(key);
@@ -44,17 +49,6 @@ export function repath(from: readonly string[], to: readonly string[]): void {
     const rest = key === fromKey ? [] : key.slice(prefix.length).split(SEP);
     idsByPath.set(keyOf([...to, ...rest]), id);
   }
-}
-
-/** Storage path of a node, as raw name segments. */
-export function segmentsOf(fs: FileSystem, id: string): string[] {
-  const segments: string[] = [];
-  let cursor: FSNode | undefined = fs[id];
-  while (cursor && cursor.id !== ROOT_ID) {
-    segments.unshift(cursor.name);
-    cursor = cursor.parentId ? fs[cursor.parentId] : undefined;
-  }
-  return segments;
 }
 
 function addEntries(fs: FileSystem, entries: WalkEntry[], parentPath: string[], parentId: string): void {

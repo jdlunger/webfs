@@ -8,8 +8,8 @@
  * stops the editor tearing down while you rename the file you're typing in.
  */
 import { test, expect } from "bun:test";
-import { ROOT_ID, canMove, childrenOf, findNodeByPath } from "./src/fs";
-import { adoptContent, projectTree, repath, segmentsOf } from "./src/tree";
+import { ROOT_ID, canMove, childrenOf, findNodeByPath, segmentsOf } from "./src/fs";
+import { adoptContent, projectTree, repath } from "./src/tree";
 import { isValidName } from "./src/storage";
 import type { WalkEntry } from "./src/storage";
 

@@ -77,12 +77,23 @@ file's text, and a directory tree expresses all four — so `storage.ts` is a
 thin layer over OPFS and nothing else. Whatever is on disk is exactly what the
 app shows, and folders are inspectable and exportable as real directories.
 
-- **Identity is the path.** Ids exist only in memory (`tree.ts`) and are never
-  written anywhere; they differ between tabs and between reloads. Anything
-  crossing that boundary — BroadcastChannel messages, `storage.ts` calls —
-  uses paths. `tree.ts`'s `repath()` carries an id (and its descendants')
-  across a rename or move, which is what stops the editor remounting while you
-  rename the file you're typing in. Verified in a browser: text survives.
+- **Storage speaks paths; the app speaks ids.** Ids exist only in memory
+  (`tree.ts`) and are never written anywhere; they differ between tabs and
+  between reloads, so anything crossing that boundary — BroadcastChannel
+  messages, `storage.ts` calls — uses paths. Everything inside `App.tsx`
+  (pending writes, merge bases) is keyed by id instead, because ids survive
+  renames and paths don't, so none of it needs re-keying when a file moves.
+  `tree.ts`'s `idForPath()` is the single bridge back, and `repath()` carries
+  an id and its descendants across a rename or move — which is what stops the
+  editor remounting while you rename the file you're typing in. Don't
+  reintroduce path-keyed state in the app layer; that mix is what previously
+  forced an O(n) scan to answer "which node is this message about".
+- **A queued write resolves its path when it flushes**, not when it was
+  queued. That's what makes renaming a file you're mid-sentence in safe: the
+  pending text follows to the new name instead of recreating the old one. It
+  also means a write for a file deleted meanwhile is dropped rather than
+  resurrecting it — `segmentsOf` returns `[]` for a node that's gone, which
+  `flushWrite` treats as "nothing to write".
 - **Names are stored as typed, not escaped.** OPFS rejects only `""`, `.`,
   `..`, and names containing `/` or `\` (`isValidName`). Spaces, colons,
   leading dots, trailing spaces and non-ASCII are all legal and round-trip

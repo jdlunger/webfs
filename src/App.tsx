@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./index.css";
-import { type FileSystem, canMove, findFirstFile, findNodeByPath, getNodePath, updateFileContent } from "./fs";
+import { type FileSystem, canMove, findFirstFile, findNodeByPath, getNodePath, segmentsOf, updateFileContent } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
 import { BASE_PATH } from "./basePath";
@@ -20,14 +20,12 @@ import {
   walk,
   writeFile,
 } from "./storage";
-import { adoptContent, loadTree, projectTree, repath, segmentsOf } from "./tree";
+import { adoptContent, idForPath, loadTree, projectTree, repath } from "./tree";
 
 /** Content saves coalesce over this window rather than firing per keystroke. */
 const WRITE_DEBOUNCE_MS = 400;
 /** How soon to try again when another tab held the file's lock. */
 const WRITE_RETRY_MS = 250;
-
-const pathKey = (segments: readonly string[]) => segments.join("/");
 
 function stripBasePath(pathname: string): string {
   if (BASE_PATH && pathname.startsWith(BASE_PATH)) {
@@ -78,10 +76,14 @@ export function App() {
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
 
-  /** Text as last seen on disk, keyed by path — the base for three-way merges. */
+  /**
+   * Everything below is keyed by node id, not path: ids survive renames (see
+   * tree.ts's repath), so none of this needs re-keying when a file moves.
+   * Paths are derived at the storage boundary and nowhere else.
+   */
+  /** Text as last seen on disk — the base for three-way merges. */
   const baseContent = useRef(new Map<string, string>());
-  const pendingWrites = useRef(new Map<string, { segments: string[]; content: string }>());
-  const writeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pending = useRef(new Map<string, { content: string; timer: ReturnType<typeof setTimeout> }>());
 
   /** Re-reads the tree from OPFS, which is the source of truth for structure. */
   const refreshTree = useCallback(async () => {
@@ -89,36 +91,36 @@ export function App() {
     setFs(prev => adoptContent(prev, projectTree(entries)));
   }, []);
 
-  const flushWrite = useCallback(async (key: string) => {
-    writeTimers.current.delete(key);
-    const pending = pendingWrites.current.get(key);
-    if (!pending) return;
+  const flushWrite = useCallback(async (id: string) => {
+    const queued = pending.current.get(id);
+    if (!queued) return;
 
-    const result = await writeFile(pending.segments, pending.content);
+    // Resolved now rather than when the write was queued, so a file renamed
+    // in the meantime is written to where it actually lives — and one deleted
+    // in the meantime isn't resurrected at its old path.
+    const segments = fsRef.current ? segmentsOf(fsRef.current, id) : [];
+    if (segments.length === 0) {
+      pending.current.delete(id);
+      return;
+    }
+
+    const result = await writeFile(segments, queued.content);
     if (result === "busy") {
       // Another tab is mid-save. Nothing is lost; come back to it.
-      writeTimers.current.set(
-        key,
-        setTimeout(() => void flushWrite(key), WRITE_RETRY_MS),
-      );
+      queued.timer = setTimeout(() => void flushWrite(id), WRITE_RETRY_MS);
       return;
     }
     // Leave anything typed while the write was in flight queued for next time.
-    if (pendingWrites.current.get(key)?.content === pending.content) pendingWrites.current.delete(key);
-    baseContent.current.set(key, pending.content);
-    announce({ kind: "file", path: [...pending.segments] });
+    if (pending.current.get(id)?.content === queued.content) pending.current.delete(id);
+    baseContent.current.set(id, queued.content);
+    announce({ kind: "file", path: segments });
   }, []);
 
   const scheduleWrite = useCallback(
-    (segments: string[], content: string) => {
-      const key = pathKey(segments);
-      pendingWrites.current.set(key, { segments, content });
-      const existing = writeTimers.current.get(key);
-      if (existing) clearTimeout(existing);
-      writeTimers.current.set(
-        key,
-        setTimeout(() => void flushWrite(key), WRITE_DEBOUNCE_MS),
-      );
+    (id: string, content: string) => {
+      const existing = pending.current.get(id);
+      if (existing) clearTimeout(existing.timer);
+      pending.current.set(id, { content, timer: setTimeout(() => void flushWrite(id), WRITE_DEBOUNCE_MS) });
     },
     [flushWrite],
   );
@@ -172,12 +174,12 @@ export function App() {
     const node = fs[selectedId];
     if (!node || node.type !== "file" || node.content !== undefined) return;
 
-    const segments = segmentsOf(fs, selectedId);
     let cancelled = false;
+    const segments = segmentsOf(fs, selectedId);
     void readFile(segments).then(stored => {
       if (cancelled) return;
       const content = stored ?? "";
-      baseContent.current.set(pathKey(segments), content);
+      baseContent.current.set(selectedId, content);
       setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
     });
     return () => {
@@ -194,30 +196,26 @@ export function App() {
           return;
         }
 
-        const segments = message.path;
-        const key = pathKey(segments);
-        const current = fsRef.current;
-        if (!current) return;
+        const id = idForPath(message.path);
         // Only reconcile files this tab has actually loaded; anything else is
         // read fresh whenever it's next opened.
-        const node = Object.values(current).find(n => n.content !== undefined && pathKey(segmentsOf(current, n.id)) === key);
-        if (!node) return;
+        if (fsRef.current?.[id]?.content === undefined) return;
 
-        void readFile(segments).then(stored => {
+        void readFile(message.path).then(stored => {
           const theirs = stored ?? "";
-          const mine = fsRef.current?.[node.id]?.content;
+          const mine = fsRef.current?.[id]?.content;
           if (mine === undefined) return;
 
-          const merged = mine === theirs ? theirs : mergeText(baseContent.current.get(key) ?? mine, mine, theirs);
-          baseContent.current.set(key, theirs);
+          const merged = mine === theirs ? theirs : mergeText(baseContent.current.get(id) ?? mine, mine, theirs);
+          baseContent.current.set(id, theirs);
 
           if (merged !== mine) {
-            setFs(prev => (prev ? updateFileContent(prev, node.id, merged) : prev));
-            if (node.id === selectedRef.current) setExternalEdit(n => n + 1);
+            setFs(prev => (prev ? updateFileContent(prev, id, merged) : prev));
+            if (id === selectedRef.current) setExternalEdit(n => n + 1);
           }
           // Push the reconciled text back so the other tab converges too.
           // Merging is stable, so this settles rather than ping-ponging.
-          if (merged !== theirs) scheduleWrite([...segments], merged);
+          if (merged !== theirs) scheduleWrite(id, merged);
         });
       }),
     [refreshTree, scheduleWrite],
@@ -227,7 +225,7 @@ export function App() {
   // async, so a page torn down instantly can still lose the last few hundred ms.
   useEffect(() => {
     const flushAll = () => {
-      for (const key of [...pendingWrites.current.keys()]) void flushWrite(key);
+      for (const id of [...pending.current.keys()]) void flushWrite(id);
     };
     const flushIfHiding = () => {
       if (document.hidden) flushAll();
@@ -267,12 +265,10 @@ export function App() {
   const handleDelete = (id: string) => {
     if (!fs) return;
     const segments = segmentsOf(fs, id);
-    const key = pathKey(segments);
-    pendingWrites.current.delete(key);
-    const timer = writeTimers.current.get(key);
-    if (timer) clearTimeout(timer);
-    writeTimers.current.delete(key);
-    baseContent.current.delete(key);
+    const queued = pending.current.get(id);
+    if (queued) clearTimeout(queued.timer);
+    pending.current.delete(id);
+    baseContent.current.delete(id);
     if (selectedId === id) setSelectedId(null);
     void mutate(() => removeEntry(segments));
   };
@@ -300,7 +296,7 @@ export function App() {
   const handleContentChange = (content: string) => {
     if (!selectedId || !fs) return;
     setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
-    scheduleWrite(segmentsOf(fs, selectedId), content);
+    scheduleWrite(selectedId, content);
   };
 
   if (failure) {
