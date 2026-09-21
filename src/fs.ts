@@ -65,10 +65,15 @@ export function updateFileContent(fs: FileSystem, id: string, content: string): 
   return { ...fs, [id]: { ...node, content, binary: false } };
 }
 
-/** Records that a file's bytes aren't text, so the editor won't open it. */
+/**
+ * Records that a file's bytes aren't text, so the editor won't open it.
+ *
+ * Returns the same record when nothing changes, so a caller that re-runs on
+ * every `fs` update can't drive itself in a circle.
+ */
 export function markFileBinary(fs: FileSystem, id: string): FileSystem {
   const node = fs[id];
-  if (!node || node.type !== "file") return fs;
+  if (!node || node.type !== "file" || node.binary) return fs;
   return { ...fs, [id]: { ...node, binary: true } };
 }
 

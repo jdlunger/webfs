@@ -84,7 +84,7 @@ export function loadState(config: SyncConfig): SyncState {
   if (!raw) return EMPTY_STATE;
   try {
     const parsed = JSON.parse(raw) as Partial<SyncState>;
-    return { commitSha: parsed.commitSha ?? null, files: parsed.files ?? {} };
+    return { files: parsed.files ?? {} };
   } catch {
     return EMPTY_STATE;
   }

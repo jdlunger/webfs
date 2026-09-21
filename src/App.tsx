@@ -258,7 +258,10 @@ export function App() {
   useEffect(() => {
     if (!fs || !selectedId) return;
     const node = fs[selectedId];
-    if (!node || node.type !== "file" || node.content !== undefined) return;
+    // `binary` as well as `content`: a file that isn't text never gets
+    // content, so without it this re-reads on every fs change — and marking
+    // it binary *is* an fs change, so the two chase each other forever.
+    if (!node || node.type !== "file" || node.content !== undefined || node.binary) return;
 
     let cancelled = false;
     const segments = segmentsOf(selectedId);

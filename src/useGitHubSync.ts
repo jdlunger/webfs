@@ -114,7 +114,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
 
       // Another tab is mid-sync; it will do the work and write the same state.
       if (outcome === "busy") {
-        setStatus(prev => ({ ...prev, phase: "idle", message: prev.message }));
+        setStatus(prev => ({ ...prev, phase: "idle" }));
         return;
       }
 

@@ -338,7 +338,12 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
 - **`data:` URIs were never an option.** GitHub's markdown sanitizer strips
   them, so inlining base64 would look right here and stay broken there — and
   it would bloat every note containing a photo.
-- **A file that isn't text is shown, not opened.** Crepe would render the
+- **A file that isn't text is shown, not opened.** `FSNode.binary` has to be
+  checked by the read effect in `App.tsx` *and* carried through
+  `adoptContent`, not just set: a binary file never gets `content`, so an
+  effect guarded on content alone re-reads it on every `fs` change — and
+  marking it binary is itself an `fs` change. That chased its own tail at
+  ~150 OPFS reads a second for as long as an image was selected. Crepe would render the
   bytes as text and write that reading back on the first keystroke, so an
   image opened from the sidebar would be destroyed by looking at it.
   `FSNode.binary` is set when a read fails to decode, and `Editor` renders a

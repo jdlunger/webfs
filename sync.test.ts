@@ -183,7 +183,7 @@ class FakeRemote implements Remote {
   }
 }
 
-const EMPTY: SyncState = { commitSha: null, files: {} };
+const EMPTY: SyncState = { files: {} };
 
 test("a first sync of a fresh repo pushes the whole store as one commit", async () => {
   const local = fakeLocal({ "Notes/todo.md": "- [ ] one", "Notes/welcome.md": "# hi" });

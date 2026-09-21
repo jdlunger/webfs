@@ -31,13 +31,11 @@ import { segmentsOf } from "./fs";
 export type ShaMap = Record<string, string>;
 
 export interface SyncState {
-  /** Head commit as of the last successful sync; only used for reporting. */
-  commitSha: string | null;
   /** The base of the three-way compare: what was in sync last time. */
   files: ShaMap;
 }
 
-export const EMPTY_STATE: SyncState = { commitSha: null, files: {} };
+export const EMPTY_STATE: SyncState = { files: {} };
 
 export interface SyncPlan {
   /** Remote is newer; take its text. */
@@ -103,7 +101,6 @@ export interface SyncSummary {
   conflicted: Array<{ path: string; keptAs: string }>;
   deletedLocal: string[];
   deletedRemote: string[];
-  commitSha: string | null;
 }
 
 /**
@@ -224,6 +221,9 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
   const base = lostLocalStore ? {} : state.files;
 
   const plan = planSync(base, localSha, remoteSha);
+  // Merges that turn out to be unmergeable join these, rather than being
+  // pushed back into the plan — that record stays what planSync decided.
+  const conflicts = [...plan.conflict];
   const summary: SyncSummary = {
     pulled: [],
     pushed: [...plan.push],
@@ -231,7 +231,6 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     conflicted: [],
     deletedLocal: [],
     deletedRemote: [...plan.deleteRemote],
-    commitSha: tree.commitSha,
   };
   const written: Array<{ path: string; content: string | null }> = [];
   const removed: string[] = [];
@@ -261,7 +260,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     // middle ground, so rather than picking one and losing the other, they
     // take the same route as files with no shared history: keep both.
     if (baseText === null || mine === null || theirText === null) {
-      plan.conflict.push(path);
+      conflicts.push(path);
       continue;
     }
     const merged = mergeText(baseText, mine, theirText);
@@ -269,7 +268,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     summary.merged.push(path);
   }
 
-  for (const path of plan.conflict) {
+  for (const path of conflicts) {
     // No shared history, or nothing mergeable: there's no honest way to merge
     // two files that just happen to share a name, and silently preferring one
     // side loses work that exists nowhere else. Both are kept; the push then
@@ -299,7 +298,7 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     Object.entries(finalSha).every(([path, sha]) => remoteSha[path] === sha);
 
   if (identical) {
-    return { state: { commitSha: tree.commitSha, files: finalSha }, summary, written, removed };
+    return { state: { files: finalSha }, summary, written, removed };
   }
 
   const entries: CommitEntry[] = [
@@ -326,9 +325,8 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     ...Object.keys(remoteSha).filter(path => finalSha[path] === undefined),
   ];
 
-  const commitSha = await remote.commit(entries, commitTitle(changed), tree.commitSha);
-  summary.commitSha = commitSha;
-  return { state: { commitSha, files: finalSha }, summary, written, removed };
+  await remote.commit(entries, commitTitle(changed), tree.commitSha);
+  return { state: { files: finalSha }, summary, written, removed };
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

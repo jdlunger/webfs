@@ -156,7 +156,7 @@ export class GitHubRemote implements Remote {
    * As `request`, but statuses that mean "this isn't there" come back as null
    * instead of throwing — 404 always, plus whatever `absent` lists.
    */
-  private async fetchRaw(path: string, init?: ApiRequest, absent: readonly number[] = []): Promise<unknown | null> {
+  private async fetchRaw(path: string, init?: ApiRequest, absent: readonly number[] = []): Promise<unknown> {
     let response: Response;
     try {
       response = await fetch(`${API}${path}`, {

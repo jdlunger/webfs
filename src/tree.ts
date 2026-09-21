@@ -31,8 +31,12 @@ export function projectTree(entries: WalkEntry[]): FileSystem {
 export function adoptContent(previous: FileSystem | null, next: FileSystem): FileSystem {
   if (!previous) return next;
   for (const node of Object.values(next)) {
-    const loaded = previous[node.id]?.content;
-    if (loaded !== undefined && node.type === "file") node.content = loaded;
+    if (node.type !== "file") continue;
+    const before = previous[node.id];
+    if (before?.content !== undefined) node.content = before.content;
+    // Carried for the same reason as content: without it, every structural
+    // change makes the app forget a file isn't text and read it again.
+    if (before?.binary) node.binary = true;
   }
   return next;
 }
