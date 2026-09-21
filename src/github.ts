@@ -144,9 +144,11 @@ export class GitHubRemote implements Remote {
     return response;
   }
 
-  /** As `request`, but a 404 comes back as null — it's an expected answer for
-   *  "does this ref exist yet". */
-  private async fetchRaw(path: string, init?: ApiRequest): Promise<unknown | null> {
+  /**
+   * As `request`, but statuses that mean "this isn't there" come back as null
+   * instead of throwing — 404 always, plus whatever `absent` lists.
+   */
+  private async fetchRaw(path: string, init?: ApiRequest, absent: readonly number[] = []): Promise<unknown | null> {
     let response: Response;
     try {
       response = await fetch(`${API}${path}`, {
@@ -164,7 +166,7 @@ export class GitHubRemote implements Remote {
       throw new GitHubError("Can't reach GitHub — check your connection.", 0);
     }
 
-    if (response.status === 404) return null;
+    if (response.status === 404 || absent.includes(response.status)) return null;
     if (!response.ok) throw new GitHubError(await describeFailure(response), response.status);
     return response.json();
   }
@@ -197,8 +199,22 @@ export class GitHubRemote implements Remote {
     };
   }
 
+  /**
+   * The branch's head commit, or null when there isn't one to parent a push on.
+   *
+   * GitHub says "no head" in two different ways, and the difference isn't
+   * about the branch. A branch that doesn't exist in a repository that *has*
+   * commits is a 404. A repository with no commits at all answers 409
+   * instead — its git endpoints have no history to talk about — and that is
+   * the state every brand-new empty repository is in. Both mean the same
+   * thing here, so both are null.
+   *
+   * Reading only the 404 as absent is what made syncing to a fresh repo fail
+   * outright: the 409 threw, `readTree` never returned, and the initial
+   * commit this client is perfectly able to make was never attempted.
+   */
   private async headSha(branch: string): Promise<string | null> {
-    const ref = (await this.fetchRaw(this.refPath(branch))) as { object?: { sha?: string } } | null;
+    const ref = (await this.fetchRaw(this.refPath(branch), undefined, [409])) as { object?: { sha?: string } } | null;
     return ref?.object?.sha ?? null;
   }
 
@@ -282,20 +298,25 @@ export class GitHubRemote implements Remote {
 
 /** Turns a failed response into something worth showing a user. */
 async function describeFailure(response: Response): Promise<string> {
-  if (response.status === 401) return "GitHub rejected the token (401). It may be expired or mistyped.";
-  if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
-    return "GitHub rate limit reached. Try again shortly.";
-  }
-  if (response.status === 403) return "That token isn't allowed to do this (403). Check its repository permissions.";
-  if (response.status === 409) return "The repository is empty or the branch is in an odd state (409).";
-  if (response.status === 422) return "GitHub rejected the update (422) — the branch moved. Retrying.";
-
+  // GitHub's own message is always appended, never swallowed by our summary.
+  // A canned "the branch is in an odd state (409)" is what a real failure
+  // looked like from the outside once, and it named nothing anyone could act
+  // on; GitHub had said "Git Repository is empty" all along.
   let detail = "";
   try {
     const body = (await response.json()) as { message?: string };
-    if (typeof body.message === "string") detail = `: ${body.message}`;
+    if (typeof body.message === "string" && body.message) detail = ` — GitHub said: ${body.message}`;
   } catch {
     /* not JSON; the status alone will have to do */
   }
+
+  if (response.status === 401) return `GitHub rejected the token (401). It may be expired or mistyped.${detail}`;
+  if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
+    return `GitHub rate limit reached. Try again shortly.${detail}`;
+  }
+  if (response.status === 403) {
+    return `That token isn't allowed to do this (403). Check its repository permissions.${detail}`;
+  }
+  if (response.status === 422) return `GitHub rejected the update (422) — the branch moved. Retrying.${detail}`;
   return `GitHub request failed (${response.status})${detail}`;
 }

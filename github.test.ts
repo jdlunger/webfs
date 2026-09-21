@@ -81,10 +81,39 @@ test("a branch that doesn't exist yet forks from the default branch", async () =
   expect(tree.commitSha).toBe("trunkhead");
 });
 
+// A brand-new repository — the "create a repo, then point webfs at it" case.
+// GitHub answers ref lookups on a repository with no commits with 409, not
+// 404: its git endpoints have no history to talk about. Stubbing this as a
+// 404 (which is what a missing branch in a *populated* repo returns) is what
+// let a broken empty-repo path pass its own test — syncing to a fresh repo
+// threw instead of making an initial commit.
 test("a repository with no commits at all syncs as an empty tree", async () => {
-  stubFetch({ "GET /repos/someone/notes": { default_branch: "main" } });
+  stubFetch({
+    "GET /repos/someone/notes": { default_branch: "main" },
+    "GET /repos/someone/notes/git/ref/heads/main": 409,
+  });
   const tree = await new GitHubRemote(credentials).readTree();
   expect(tree).toEqual({ commitSha: null, entries: [] });
+});
+
+test("an empty repository gets a first commit rather than an error", async () => {
+  const calls = stubFetch({
+    "GET /repos/someone/notes": { default_branch: "main" },
+    "GET /repos/someone/notes/git/ref/heads/main": 409,
+    "POST /repos/someone/notes/git/blobs": { sha: "blob" },
+    "POST /repos/someone/notes/git/trees": { sha: "tree" },
+    "POST /repos/someone/notes/git/commits": { sha: "commit" },
+    "POST /repos/someone/notes/git/refs": { ref: "refs/heads/main" },
+  });
+
+  const remote = new GitHubRemote(credentials);
+  const tree = await remote.readTree();
+  await remote.commit([{ path: "a.md", mode: "100644", content: "hi" }], "webfs sync", tree.commitSha);
+
+  expect(calls.find(c => c.path.endsWith("/git/commits"))!.body.parents).toEqual([]);
+  // The branch has to be created, not updated — there's no ref to patch.
+  expect(calls.find(c => c.path.endsWith("/git/refs"))!.body).toEqual({ ref: "refs/heads/main", sha: "commit" });
+  expect(calls.some(c => c.method === "PATCH")).toBe(false);
 });
 
 test("a truncated tree is refused rather than half-synced", async () => {
@@ -183,6 +212,21 @@ test("a branch name with slashes reaches the right ref", async () => {
   await remote.readTree().catch(() => {});
   // The slash inside the branch name stays a path separator; encoding it 404s.
   expect(calls[0]!.path).toBe("/repos/someone/notes/git/ref/heads/notes/phone");
+});
+
+test("a failure carries GitHub's own words, not just our summary of them", async () => {
+  // The one thing that actually identifies an unexpected failure. A canned
+  // message with only a status code sent a real bug report back as "odd
+  // state (409)" when GitHub had said exactly what was wrong.
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ message: "Git Repository is empty." }), { status: 409 })) as unknown as typeof fetch;
+
+  const error = await new GitHubRemote(credentials)
+    .commit([{ path: "a.md", mode: "100644", sha: "x" }], "webfs sync", "c")
+    .catch((err: GitHubError) => err);
+
+  expect((error as GitHubError).message).toContain("Git Repository is empty.");
+  expect((error as GitHubError).status).toBe(409);
 });
 
 test("failures explain themselves without ever quoting the token", async () => {

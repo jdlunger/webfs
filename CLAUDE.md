@@ -210,6 +210,20 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   pointing webfs at a new branch of an existing repo starts from that repo's
   files rather than orphaning them. A repo with no commits at all gets an
   initial commit with no parents.
+- **"No head" arrives as either a 404 or a 409, and the difference isn't the
+  branch.** A missing branch in a repository that has commits is a 404; a
+  repository with *no commits at all* answers 409 on its git endpoints, since
+  there's no history to talk about. Every brand-new empty repo is in that
+  state, so reading only the 404 as absent made the most ordinary setup there
+  is — create a repo, point webfs at it — fail outright with nothing synced.
+  Worth knowing that `github.test.ts` faked that case as a 404 and passed
+  while the real path was broken; it now uses the status GitHub actually
+  sends.
+- **GitHub's own message is always appended to a failure.** The canned
+  summaries are ours and they get stale; `message` is GitHub's and it is the
+  only thing that identifies an unexpected failure. The 409 above reached a
+  bug report as "odd state (409)" while GitHub had been saying "Git
+  Repository is empty." the whole time.
 - **The token lives in localStorage, not OPFS** — OPFS is what gets pushed, so
   a token stored there would be committed to the repository it grants access
   to. That still leaves a token readable by any script on this origin, and
