@@ -2,13 +2,15 @@
 
 A single-page file explorer + markdown editor. Everything is client-side —
 the "filesystem" (`src/fs.ts`) is a flat `Record<id, FSNode>` persisted to
-`localStorage`, there is no backend API. `src/index.ts` (`Bun.serve()`) just
-serves `src/index.html` for local dev/preview; production is a static export
-(see Deployment below), not this server.
+OPFS (see Storage below), there is no backend API. `src/index.ts`
+(`Bun.serve()`) just serves `src/index.html` for local dev/preview;
+production is a static export (see Deployment below), not this server.
 
-Key files: `App.tsx` (top-level state + URL routing), `Sidebar.tsx` (file
-tree, rename/move UI), `Editor.tsx` (Milkdown integration), `fs.ts`
-(filesystem data model, pure functions, no React).
+Key files: `App.tsx` (top-level state + URL routing + cross-tab
+reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
+(Milkdown integration), `fs.ts` (filesystem data model, pure functions, no
+React, no storage), `storage.ts` (OPFS persistence + locking + cross-tab
+notification), `merge.ts` (three-way line merge).
 
 ## Git workflow
 
@@ -23,9 +25,13 @@ merge step in between.
 ## Editor (Milkdown / Crepe)
 
 `Editor.tsx` mounts a `@milkdown/crepe` `Crepe` instance per file (remounted
-via React `key={file.id}` rather than fed new content on prop changes — it's
-an uncontrolled component; content flows *out* via the `markdownUpdated`
-listener into `fs`, never back in after creation).
+via React `key` rather than fed new content on prop changes — it's an
+uncontrolled component; content flows *out* via the `markdownUpdated`
+listener into `fs`, never back in after creation). The key is
+`` `${file.id}:${externalEdit}` ``: `externalEdit` is a counter `App.tsx`
+bumps *only* when another tab's edit has been merged in, since remounting is
+the one way to push text into an uncontrolled editor. It costs the cursor
+position and undo history, so never bump it for local typing.
 
 - Import individual `@milkdown/crepe/theme/common/*.css` files, **not** the
   `theme/common/style.css` bundle — that bundle `@import`s `latex.css`,
@@ -62,6 +68,63 @@ hamburger button. Notes learned the hard way:
 - Crepe's default content padding/heading sizes are tuned for a wide desktop
   column and need phone-width overrides (see the `@media (max-width: 768px)`
   block in `index.css`).
+
+## Storage (OPFS) and multiple tabs
+
+`storage.ts` owns persistence. The tree lives in `tree.json` and each file's
+text in `files/<id>.md`, both in OPFS. Splitting them is the point: a save
+touches only the file being edited, so two tabs editing different files can't
+clobber each other, and a corrupt file costs one note rather than the whole
+filesystem (the old single-blob design re-seeded from scratch on any
+`JSON.parse` failure — total loss).
+
+- **The OPFS layout is flat, not a mirror of the tree.** Nodes are addressed
+  by id, so rename and move stay pure metadata edits in `tree.json` — no file
+  moves, no name-collision rules, ids stable across both. Only `tree.json`
+  knows about hierarchy.
+- **Locks are taken only around writes**, via the Web Locks API, and give up
+  after `LOCK_TIMEOUT_MS` (750ms). Reads never lock, so a file another tab is
+  mid-save is still instantly viewable. A write that loses the race returns
+  `"busy"` and `App.tsx` retries — nothing is dropped, because the pending
+  text stays queued.
+- **Content loads lazily**, when a file is opened. `FSNode.content` being
+  `undefined` means "not read yet", not "empty" — `Editor.tsx` shows a loading
+  state for that case. Don't assume a file node has text.
+- **Saves are debounced** (`WRITE_DEBOUNCE_MS`, 400ms) rather than written per
+  keystroke, and flushed on `pagehide`/hide. That flush is best-effort: OPFS
+  writes are async, so a page torn down instantly can still lose the last few
+  hundred ms.
+- **The tree is still written whole**, so per-file splitting protects file
+  *contents*, not structure: two tabs restructuring at the same instant is
+  last-writer-wins. A tree write that loses the lock race is retried rather
+  than dropped (`persistTree` in `App.tsx`) — dropping it would silently lose
+  a create, rename, move or delete.
+- **Cross-tab sync is a `BroadcastChannel`** (`webfs:changes`). A tab announces
+  only after a write succeeds; receivers re-read that file and reconcile.
+  Tree changes re-read `tree.json` via `adoptTree`, which preserves content
+  already loaded in the receiving tab (the stored tree carries none).
+- **`merge.ts` is deliberately lossy.** It reduces each side to the single run
+  of lines it changed and applies both when they don't overlap; when they do,
+  local text wins and the other tab's version of those lines is dropped. No
+  real diff, no conflict markers. It is *stable* — merging a merged result
+  changes nothing — which is what stops two tabs ping-ponging writes at each
+  other. Verified converging in a real two-tab browser run, not just in unit
+  tests.
+- **Migration off the old `webfs:filesystem` blob runs once**, on first load
+  when no `tree.json` exists, and leaves the legacy key in place as a backup
+  rather than deleting it. That also makes a rollback to pre-OPFS code safe:
+  it would find the old blob intact (minus anything edited since). Don't
+  "tidy up" that key without thinking about rollback.
+- **OPFS needs `createWritable`**, which not every browser with OPFS has. When
+  it's missing, `storage.ts` falls back to localStorage using the same
+  per-file key layout, so concurrency behaves identically and only the medium
+  and size limit change. `storageBackend()` reports which is live. **iOS
+  Safari support for `createWritable` has not been verified on a real device
+  — worth checking before assuming the OPFS path is what ships to phones.**
+- `bun test` covers `merge.ts` and `storage.ts` (through the localStorage
+  backend — OPFS can't run headless). The OPFS path, two-tab merging and
+  offline behavior were verified by driving real Chromium tabs; that isn't in
+  CI, so re-run it by hand after touching this area.
 
 ## Deployment (GitHub Pages)
 

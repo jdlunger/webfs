@@ -200,6 +200,14 @@ body {
   color: #666;
 }
 
+/* Shown only for the moment between boot and the tree arriving from storage,
+   which is async now that content lives in OPFS. */
+.app-loading {
+  align-items: center;
+  justify-content: center;
+  color: #666;
+}
+
 .editor-header {
   padding: 10px 16px;
   border-bottom: 1px solid #2c2c2c;

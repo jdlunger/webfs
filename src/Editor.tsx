@@ -21,6 +21,8 @@ import type { FSNode } from "./fs";
 
 interface EditorProps {
   file: FSNode | null;
+  /** Counter bumped when another tab's edit has been merged into `file`. */
+  externalEdit: number;
   onChange: (content: string) => void;
 }
 
@@ -73,7 +75,7 @@ function MilkdownEditor({ file, onChange }: MilkdownEditorProps) {
   return <div className="milkdown-root" ref={containerRef} />;
 }
 
-export function Editor({ file, onChange }: EditorProps) {
+export function Editor({ file, externalEdit, onChange }: EditorProps) {
   if (!file) {
     return (
       <div className="editor editor-empty">
@@ -82,10 +84,30 @@ export function Editor({ file, onChange }: EditorProps) {
     );
   }
 
+  // Content is fetched when a file is opened, so a file node can exist before
+  // its text does.
+  if (file.content === undefined) {
+    return (
+      <div className="editor">
+        <div className="editor-header">{file.name}</div>
+        <div className="editor-empty">
+          <p>Loading…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="editor">
       <div className="editor-header">{file.name}</div>
-      <MilkdownEditor key={file.id} file={file} onChange={onChange} />
+      {/*
+        The key carries `externalEdit` as well as the file id. Crepe is
+        uncontrolled and only reads `defaultValue` at construction, so
+        remounting is the only way to show text that arrived from another tab.
+        It costs the cursor position and undo history, which is why App only
+        bumps the counter for genuinely external edits and never for typing.
+      */}
+      <MilkdownEditor key={`${file.id}:${externalEdit}`} file={file} onChange={onChange} />
     </div>
   );
 }

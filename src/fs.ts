@@ -5,13 +5,17 @@ export interface FSNode {
   name: string;
   type: NodeType;
   parentId: string | null;
+  /**
+   * Only present for files, and only once loaded: content lives in its own
+   * store entry (see storage.ts) and is fetched when a file is opened, so
+   * `undefined` on a file node means "not read yet", not "empty".
+   */
   content?: string;
 }
 
 export type FileSystem = Record<string, FSNode>;
 
 export const ROOT_ID = "root";
-const STORAGE_KEY = "webfs:filesystem";
 
 export function generateId(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -21,7 +25,7 @@ function makeNode(id: string, name: string, type: NodeType, parentId: string | n
   return { id, name, type, parentId, content };
 }
 
-function createSeedFileSystem(): FileSystem {
+export function createSeedFileSystem(): FileSystem {
   const nodes: FSNode[] = [
     makeNode(ROOT_ID, "root", "folder", null),
     makeNode("notes", "Notes", "folder", ROOT_ID),
@@ -30,7 +34,7 @@ function createSeedFileSystem(): FileSystem {
       "welcome.md",
       "file",
       "notes",
-      "# Welcome to your markdown editor!\n\nThis is a simple file explorer + **markdown** editor.\nEverything you create is saved in your browser's local storage.\n\nTry editing this file, or use the sidebar buttons to add new files and folders.",
+      "# Welcome to your markdown editor!\n\nThis is a simple file explorer + **markdown** editor.\nEverything you create is saved in your browser, on this device.\n\nTry editing this file, or use the sidebar buttons to add new files and folders.",
     ),
     makeNode(
       "notes-todo",
@@ -45,25 +49,6 @@ function createSeedFileSystem(): FileSystem {
   const fs: FileSystem = {};
   for (const n of nodes) fs[n.id] = n;
   return fs;
-}
-
-export function loadFileSystem(): FileSystem {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as FileSystem;
-      if (parsed && parsed[ROOT_ID]) return parsed;
-    } catch {
-      // fall through to seed
-    }
-  }
-  const seeded = createSeedFileSystem();
-  saveFileSystem(seeded);
-  return seeded;
-}
-
-export function saveFileSystem(fs: FileSystem): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(fs));
 }
 
 export function childrenOf(fs: FileSystem, parentId: string): FSNode[] {
@@ -81,6 +66,13 @@ function collectDescendantIds(fs: FileSystem, id: string): string[] {
     ids.push(...collectDescendantIds(fs, child.id));
   }
   return ids;
+}
+
+/** The node plus everything under it — what a delete needs to clean up on disk. */
+export function nodeAndDescendants(fs: FileSystem, id: string): FSNode[] {
+  return collectDescendantIds(fs, id)
+    .map(descendantId => fs[descendantId])
+    .filter((node): node is FSNode => node !== undefined);
 }
 
 export function deleteNode(fs: FileSystem, id: string): FileSystem {
