@@ -20,6 +20,13 @@ bun start
 
 This project was created using `bun init` in bun v1.4.2. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
 
+## Tests
+
+```bash
+bun test          # unit tests
+bun run browser   # drives the real app in Chromium (needs `bunx playwright install chromium`)
+```
+
 ## Sync with GitHub
 
 Files can be kept in step with a branch of a GitHub repository, in both

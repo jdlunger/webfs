@@ -10,7 +10,9 @@ Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
 (Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
 OPFS into the in-memory record), `fs.ts` (pure queries over that record),
-`merge.ts` (three-way line merge).
+`merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
+(`bun test`) plus `browser/` for what only a real browser can exercise
+(`bun run browser`).
 
 ## Git workflow
 
@@ -157,8 +159,8 @@ app shows, and folders are inspectable and exportable as real directories.
 - `bun test` covers `merge.ts` (`merge.test.ts`) and `tree.ts`
   (`tree.test.ts`: projection, id stability across rename/move, name
   validation). OPFS itself can't run headless, so seeding, rename, folder
-  moves, two-tab merging and offline were verified by driving real Chromium
-  tabs — not in CI, so re-run by hand after touching this area.
+  moves, two-tab merging and offline are verified by driving real Chromium
+  tabs — see Browser suites below.
 
 ## GitHub sync (two-way, personal access token)
 
@@ -307,12 +309,10 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
 - `bun test` covers the algorithm against an in-memory branch and store
   (`sync.test.ts`), the REST wiring against a stubbed `fetch`
   (`github.test.ts`), and the dialog's two pure pieces — repository parsing
-  and the token link — in `syncPanel.test.ts`. What neither covers is the two touching real OPFS and a
-  real editor, which was verified by driving Chromium against an intercepted
-  `api.github.com`: first sync both ways, a typed edit reaching the repo, a
-  remote edit re-rendering in the open editor, a two-sided edit merging,
-  deletions propagating, a second device converging, and a wiped device
-  refilling. Re-run that by hand after touching this area.
+  and the token link — in `syncPanel.test.ts`. What none of them covers is
+  those pieces touching real OPFS and a real editor: that's `bun run browser`
+  (see Browser suites below), which drives Chromium against an intercepted
+  `api.github.com`.
 
 ## Images pasted into a note
 
@@ -354,6 +354,39 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   requires the link to name something: without that, an empty link resolved
   to the note's own folder, which is a directory. `assets.test.ts` covers
   both, which is how the second one was found.
+
+## Browser suites (`bun run browser`)
+
+`browser/` drives the real app in Chromium, because the half of webfs that
+matters most can't run headless: OPFS, a live Milkdown editor, a service
+worker, and sync reconciling between all three. `bun test` has never covered
+any of that, and every bug that reached a user came from exactly there — an
+empty repo's 409, a stale service-worker shell, a runaway read loop.
+
+- **Running them:** `bun run browser`, or `bun run browser sync` for one
+  (`sync`, `empty-repo`, `images`). The dev server is started by the runner,
+  so nothing needs to be up first. Chromium comes from
+  `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
+  that already exists. Not in CI — they take about a minute and want a real
+  browser — so run them by hand after touching sync, storage or the editor.
+- **`FakeGitHub` refuses what the real API refuses**, which is the point of
+  it rather than a detail: git-object endpoints 409 while a repo has no
+  commits, and ref creation is rejected outright. An earlier fake answered
+  404 where GitHub answers 409, and a broken empty-repo path passed its own
+  test twice because of it. If you extend the fake, copy GitHub's failures as
+  carefully as its successes.
+- **Poll outcomes, never the status line.** It shows what the *last* sync
+  did, so asserting on it right after clicking Sync reads the previous run
+  and passes for the wrong reason — which it did, hiding a real failure.
+  `waitUntil` and `syncAndSettle` exist for this.
+- **Wait for the thing you mean.** A pasted image writes its file
+  immediately but its link goes through the editor's save debounce, so
+  waiting on the asset alone catches the note mid-write.
+- **`opfsFiles` skips entries that vanish under it.** The app writes while
+  the walker reads; a half-created file is not an answer worth returning.
+- Browsers make things *look* fine that aren't: a `blob:` image still renders
+  after a reload from the in-memory image cache while the URL itself is dead.
+  Assert on the thing (`fetch` the URL, compare bytes), not on the pixels.
 
 ## Deployment (GitHub Pages)
 
