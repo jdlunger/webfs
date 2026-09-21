@@ -110,11 +110,10 @@ filesystem (the old single-blob design re-seeded from scratch on any
   changes nothing — which is what stops two tabs ping-ponging writes at each
   other. Verified converging in a real two-tab browser run, not just in unit
   tests.
-- **Migration off the old `webfs:filesystem` blob runs once**, on first load
-  when no `tree.json` exists, and leaves the legacy key in place as a backup
-  rather than deleting it. That also makes a rollback to pre-OPFS code safe:
-  it would find the old blob intact (minus anything edited since). Don't
-  "tidy up" that key without thinking about rollback.
+- **There is deliberately no migration** from the pre-OPFS
+  `webfs:filesystem` blob. A browser still holding one starts fresh from the
+  seed; the old key is simply left alone, neither read nor cleared. This was
+  an explicit call, not an oversight — don't add an import path back in.
 - **OPFS needs `createWritable`**, which not every browser with OPFS has. When
   it's missing, `storage.ts` falls back to localStorage using the same
   per-file key layout, so concurrency behaves identically and only the medium

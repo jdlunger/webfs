@@ -2,10 +2,9 @@
  * Covers the storage layer through its localStorage backend.
  *
  * The OPFS path can't run under `bun test` (no navigator.storage), but both
- * backends go through the same read/write/migrate code — only the medium
- * differs — so this exercises the logic that matters, above all the one-way
- * migration off the pre-OPFS blob, which runs against real user data exactly
- * once and can't be re-run if it's wrong.
+ * backends go through the same read/write code — only the medium differs — so
+ * this exercises the seeding, per-file isolation and failure handling that
+ * matter either way.
  */
 import { test, expect, beforeEach } from "bun:test";
 
@@ -40,12 +39,6 @@ const fake = new FakeLocalStorage();
 const storage = await import("./src/storage");
 const { ROOT_ID } = await import("./src/fs");
 
-const LEGACY = {
-  root: { id: "root", name: "root", type: "folder", parentId: null },
-  arch: { id: "arch", name: "Archive", type: "folder", parentId: "root" },
-  note: { id: "note", name: "important.md", type: "file", parentId: "arch", content: "# keep me\n\nreal data" },
-};
-
 beforeEach(() => fake.clear());
 
 test("uses the localStorage backend when OPFS is unavailable", () => {
@@ -65,31 +58,22 @@ test("the stored tree carries structure only, never content", async () => {
   expect(raw["notes-welcome"].content).toBeUndefined();
 });
 
-test("migrates the pre-OPFS blob, splitting it into tree plus per-file entries", async () => {
-  fake.setItem("webfs:filesystem", JSON.stringify(LEGACY));
+test("a pre-OPFS blob is ignored, not imported", async () => {
+  // Migration was dropped on purpose: a browser still holding the old
+  // whole-filesystem blob starts fresh from the seed rather than carrying it
+  // over. Pinned so nobody reintroduces an import path by accident.
+  fake.setItem(
+    "webfs:filesystem",
+    JSON.stringify({
+      root: { id: "root", name: "root", type: "folder", parentId: null },
+      note: { id: "note", name: "legacy.md", type: "file", parentId: "root", content: "old data" },
+    }),
+  );
 
   const tree = await storage.readTree();
-  expect(tree["note"]!.name).toBe("important.md");
-  expect(tree["arch"]!.type).toBe("folder");
-  expect(await storage.readFileContent("note")).toBe("# keep me\n\nreal data");
-  expect(fake.keys()).toContain("webfs:file:note");
-});
-
-test("migration keeps the legacy blob as a backup rather than deleting it", async () => {
-  fake.setItem("webfs:filesystem", JSON.stringify(LEGACY));
-  await storage.readTree();
-  expect(fake.getItem("webfs:filesystem")).not.toBeNull();
-});
-
-test("migration does not re-run once a tree exists, so it can't clobber newer edits", async () => {
-  fake.setItem("webfs:filesystem", JSON.stringify(LEGACY));
-  await storage.readTree();
-
-  await storage.writeFileContent("note", "edited after migrating");
-  const tree = await storage.readTree();
-
-  expect(tree["note"]).toBeDefined();
-  expect(await storage.readFileContent("note")).toBe("edited after migrating");
+  expect(tree["note"]).toBeUndefined();
+  expect(tree["notes-welcome"]).toBeDefined();
+  expect(await storage.readFileContent("note")).toBeNull();
 });
 
 test("a corrupt tree falls back to seeding instead of throwing", async () => {

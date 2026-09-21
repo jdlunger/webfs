@@ -23,8 +23,6 @@
  */
 import { ROOT_ID, createSeedFileSystem, type FileSystem, type FSNode } from "./fs";
 
-/** The pre-OPFS whole-filesystem blob. Read once to migrate, never written. */
-const LEGACY_KEY = "webfs:filesystem";
 const TREE_NAME = "tree.json";
 const FILES_DIR = "files";
 const LS_TREE_KEY = "webfs:tree";
@@ -156,27 +154,15 @@ function parseTree(raw: string | null): FileSystem | null {
 }
 
 /**
- * Imports the pre-OPFS blob, splitting it into a tree plus one file per note.
- * The legacy key is left in place as a backup rather than cleared.
+ * Loads the tree, seeding on first run. Nodes carry no content.
+ *
+ * There is deliberately no import path from the pre-OPFS `webfs:filesystem`
+ * blob: anything stored under it is not carried over, and a browser holding
+ * one simply starts fresh from the seed.
  */
-async function migrateLegacyBlob(): Promise<FileSystem | null> {
-  const legacy = parseTree(typeof localStorage === "undefined" ? null : localStorage.getItem(LEGACY_KEY));
-  if (!legacy) return null;
-
-  for (const node of Object.values(legacy)) {
-    if (node.type === "file") await writeRaw(LS_FILE_PREFIX + node.id, `${node.id}.md`, "files", node.content ?? "");
-  }
-  await writeRaw(LS_TREE_KEY, TREE_NAME, "root", JSON.stringify(stripContent(legacy)));
-  return legacy;
-}
-
-/** Loads the tree, migrating or seeding on first run. Nodes carry no content. */
 export async function readTree(): Promise<FileSystem> {
   const existing = parseTree(await readRaw(LS_TREE_KEY, TREE_NAME, "root"));
   if (existing) return existing;
-
-  const migrated = await migrateLegacyBlob();
-  if (migrated) return stripContent(migrated);
 
   const seeded = createSeedFileSystem();
   for (const node of Object.values(seeded)) {
