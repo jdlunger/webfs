@@ -7,7 +7,7 @@
  * device intact — without ever being opened as text, which would destroy it.
  */
 import type { Browser } from "playwright";
-import { Checks, FakeGitHub, asText, connectThroughDialog, openApp, openFile, opfsFiles, waitUntil } from "./harness";
+import { Checks, FakeGitHub, asText, connectedContext, openApp, openFile, opfsFiles, waitUntil } from "./harness";
 
 /** A real 3×3 PNG, so the browser genuinely decodes it. */
 const PNG_BASE64 =
@@ -18,12 +18,13 @@ export default async function run(browser: Browser): Promise<number> {
   const checks = new Checks("pasted images");
   checks.heading();
 
+  // The drive is the repository, so the note the image is pasted into has to
+  // come from there — a GitHub drive starts empty and fills itself by pulling.
   const host = new FakeGitHub();
-  const context = await browser.newContext();
-  await host.route(context);
+  await host.seed({ "Notes/welcome.md": "# Welcome\n\nA note to paste into.\n" });
+  const context = await connectedContext(browser, host);
   const page = await openApp(context);
-  await connectThroughDialog(page);
-  await page.waitForTimeout(2000);
+  await waitUntil("the first pull", async () => Boolean((await opfsFiles(page))["Notes/welcome.md"]));
 
   await openFile(page, "welcome.md");
   await page.click(".milkdown-root .ProseMirror");
@@ -68,10 +69,8 @@ export default async function run(browser: Browser): Promise<number> {
   checks.ok("byte-for-byte identical on GitHub", host.files[ASSET]?.toString("base64") === PNG_BASE64);
 
   // A second device pulls it down intact.
-  const second = await browser.newContext();
-  await host.route(second);
+  const second = await connectedContext(browser, host);
   const page2 = await openApp(second);
-  await connectThroughDialog(page2);
   const arrived = await waitUntil("the image on device two", async () => (await opfsFiles(page2))[ASSET] === PNG_BASE64);
   checks.ok("a second device gets the image, unharmed", arrived);
 

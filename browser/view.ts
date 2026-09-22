@@ -101,7 +101,10 @@ export default async function run(browser: Browser): Promise<number> {
 async function checkTouch(browser: Browser, checks: Checks): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 390, height: 780 }, hasTouch: true, isMobile: true });
   const page = await openApp(context);
-  await page.waitForSelector(".mobile-topbar-title", { timeout: 15_000 });
+  // The tree, not the topbar: the topbar is part of the chrome now and is on
+  // screen before a drive has finished loading, so waiting on it would ask
+  // about the toggle before there is a file for it to act on.
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
 
   checks.ok("the topbar carries the toggle", (await page.locator(".mobile-view-button").count()) === 1);
   await page.click(".mobile-view-button");

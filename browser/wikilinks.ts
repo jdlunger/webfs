@@ -9,7 +9,7 @@
  * every note in a vault the first time it was touched.
  */
 import type { Browser } from "playwright";
-import { Checks, asText, openApp, openFile, opfsFiles, typeInEditor, waitUntil } from "./harness";
+import { Checks, asText, openApp, openFile, opfsFiles, typeInEditor, waitUntil, writeOpfsBytes, writeOpfsFile } from "./harness";
 
 /** A real 3×3 PNG, so the browser genuinely decodes it. */
 const PNG_BASE64 =
@@ -28,24 +28,10 @@ export default async function run(browser: Browser): Promise<number> {
   const page = await openApp(context);
   await page.waitForSelector(".milkdown-root, .editor", { timeout: 15_000 });
 
-  // Written straight into OPFS, the way a sync from an Obsidian vault would
-  // leave them — the attachment nowhere near the note that links it.
-  await page.evaluate(
-    async ({ png, note, markdown }) => {
-      const root = await navigator.storage.getDirectory();
-      const write = async (path: string, bytes: Uint8Array<ArrayBuffer>) => {
-        const segments = path.split("/");
-        let dir = root;
-        for (const segment of segments.slice(0, -1)) dir = await dir.getDirectoryHandle(segment, { create: true });
-        const writable = await (await dir.getFileHandle(segments.at(-1)!, { create: true })).createWritable();
-        await writable.write(bytes);
-        await writable.close();
-      };
-      await write("Media/Pasted image 20260905101712.png", Uint8Array.from(atob(png), c => c.charCodeAt(0)));
-      await write(note, new TextEncoder().encode(markdown));
-    },
-    { png: PNG_BASE64, note: NOTE, markdown: MARKDOWN },
-  );
+  // Written straight into the drive, the way a sync from an Obsidian vault
+  // would leave them — the attachment nowhere near the note that links it.
+  await writeOpfsBytes(page, "Media/Pasted image 20260905101712.png", PNG_BASE64);
+  await writeOpfsFile(page, NOTE, MARKDOWN);
 
   await page.reload();
   await page.waitForSelector(".tree-row", { timeout: 15_000 });

@@ -7,7 +7,7 @@
  * form with no indication anything was meant to be filled in.
  */
 import { test, expect } from "bun:test";
-import { parseRepository, tokenSetupUrl } from "./src/SyncPanel";
+import { parseRepository, tokenSetupUrl } from "./src/DrivePanel";
 
 test("a repository is accepted however someone happens to have it", () => {
   const expected = { owner: "jdlunger", repo: "notes" };

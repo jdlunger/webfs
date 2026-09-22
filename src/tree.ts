@@ -5,7 +5,7 @@
  * the walk — there is no identity to allocate or track.
  */
 import { ROOT_ID, idOf, type FileSystem, type NodeType } from "./fs";
-import { createDirectory, createFile, walk, writeFile, type WalkEntry } from "./storage";
+import type { Store, WalkEntry } from "./storage";
 
 function addEntries(fs: FileSystem, entries: WalkEntry[], parentPath: string[], parentId: string): void {
   for (const entry of entries) {
@@ -61,7 +61,7 @@ const SEED: Array<{ dir: string; files: Array<{ name: string; body: string }> }>
 ];
 
 /**
- * Held while a load is in flight, so two overlapping calls share one seed.
+ * Loads in flight, by mount, so two overlapping calls share one seed.
  *
  * Nothing about "is the store empty, and if so fill it" is atomic: both calls
  * walk an empty store and both seed it, and since `createDirectory` uniquifies
@@ -69,35 +69,44 @@ const SEED: Array<{ dir: string; files: Array<{ name: string; body: string }> }>
  * `Projects 2`. React's StrictMode does exactly that in development — it
  * mounts, tears down and remounts, running the load effect twice — so this is
  * reproducible on the first load of `bun dev` and in every browser suite.
+ *
+ * Keyed by mount rather than held in one variable, because switching drives
+ * starts a second load while the first may still be settling, and those two
+ * are about different folders — sharing a promise between them would hand one
+ * drive the other's tree.
  */
-let loading: Promise<FileSystem> | null = null;
+const loading = new Map<string, Promise<FileSystem>>();
 
 /**
- * Reads the tree, writing starter content first if the store is empty.
+ * Reads a drive's tree, writing starter content first if it is empty.
  *
- * `seed: false` is how a device with GitHub sync configured starts up: its
- * store is empty because the files live in the repository, and seeding would
- * push three starter notes into someone's established notes repo (or collide
- * with files already at those paths) before the first sync could fill it.
+ * `seed: false` is how a drive backed by GitHub starts up: it is empty
+ * because the files live in the repository, and seeding would push three
+ * starter notes into someone's established notes repo (or collide with files
+ * already at those paths) before the first sync could fill it.
  */
-export function loadTree(options: { seed?: boolean } = {}): Promise<FileSystem> {
-  loading ??= readOrSeed(options).finally(() => {
-    loading = null;
+export function loadTree(store: Store, options: { seed?: boolean } = {}): Promise<FileSystem> {
+  const key = store.mount.join("/");
+  const existing = loading.get(key);
+  if (existing) return existing;
+  const started = readOrSeed(store, options).finally(() => {
+    loading.delete(key);
   });
-  return loading;
+  loading.set(key, started);
+  return started;
 }
 
-async function readOrSeed({ seed = true }: { seed?: boolean }): Promise<FileSystem> {
-  let entries = await walk();
+async function readOrSeed(store: Store, { seed = true }: { seed?: boolean }): Promise<FileSystem> {
+  let entries = await store.walk();
   if (entries.length === 0 && seed) {
     for (const { dir, files } of SEED) {
-      const dirName = await createDirectory([], dir);
+      const dirName = await store.createDirectory([], dir);
       for (const { name, body } of files) {
-        const fileName = await createFile([dirName], name);
-        await writeFile([dirName, fileName], body);
+        const fileName = await store.createFile([dirName], name);
+        await store.writeFile([dirName, fileName], body);
       }
     }
-    entries = await walk();
+    entries = await store.walk();
   }
   return projectTree(entries);
 }

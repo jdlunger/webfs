@@ -24,7 +24,7 @@
  */
 import { FILE_MODE, decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteEntry } from "./github";
 import { mergeText } from "./merge";
-import { readBytes, walk, writeFile, removeEntry, type Bytes } from "./storage";
+import type { Bytes, Store, WalkEntry } from "./storage";
 import { segmentsOf } from "./fs";
 
 /** path → git blob sha. */
@@ -232,35 +232,43 @@ export interface LocalFs {
 const WRITE_ATTEMPTS = 4;
 const WRITE_RETRY_MS = 200;
 
-/** The OPFS-backed implementation; the interface above exists for tests. */
-export const opfsLocalFs: LocalFs = {
-  read: readLocalTree,
-  write: async (path, content) => {
-    // A write that loses the lock race must not be reported as done: the
-    // caller records what it wrote as the new sync base, and a base claiming
-    // a file holds text that never reached disk would read as a local edit to
-    // push on the next pass — pushing the version this sync was replacing.
-    for (let attempt = 1; ; attempt++) {
-      if ((await writeFile(segmentsOf(path), content)) === "ok") return;
-      if (attempt === WRITE_ATTEMPTS) throw new Error(`Couldn't write ${path}: another tab is holding it.`);
-      await new Promise(resolve => setTimeout(resolve, WRITE_RETRY_MS));
-    }
-  },
-  remove: async path => {
-    await removeEntry(segmentsOf(path));
-  },
-};
+/**
+ * The OPFS-backed implementation, for one drive; the interface above exists
+ * for tests.
+ *
+ * Paths stay relative to the drive's mount, which is what lets them be the
+ * paths in the repository as well — a drive's root *is* the repository root.
+ */
+export function opfsLocalFs(store: Store): LocalFs {
+  return {
+    read: () => readLocalTree(store),
+    write: async (path, content) => {
+      // A write that loses the lock race must not be reported as done: the
+      // caller records what it wrote as the new sync base, and a base claiming
+      // a file holds text that never reached disk would read as a local edit to
+      // push on the next pass — pushing the version this sync was replacing.
+      for (let attempt = 1; ; attempt++) {
+        if ((await store.writeFile(segmentsOf(path), content)) === "ok") return;
+        if (attempt === WRITE_ATTEMPTS) throw new Error(`Couldn't write ${path}: another tab is holding it.`);
+        await new Promise(resolve => setTimeout(resolve, WRITE_RETRY_MS));
+      }
+    },
+    remove: async path => {
+      await store.removeEntry(segmentsOf(path));
+    },
+  };
+}
 
-export async function readLocalTree(): Promise<Record<string, Bytes>> {
+export async function readLocalTree(store: Store): Promise<Record<string, Bytes>> {
   const files: Record<string, Bytes> = {};
-  const visit = async (entries: Awaited<ReturnType<typeof walk>>, prefix: string[]): Promise<void> => {
+  const visit = async (entries: WalkEntry[], prefix: string[]): Promise<void> => {
     for (const entry of entries) {
       const path = [...prefix, entry.name];
       if (entry.kind === "directory") await visit(entry.children, path);
-      else files[path.join("/")] = (await readBytes(path)) ?? new Uint8Array(0);
+      else files[path.join("/")] = (await store.readBytes(path)) ?? new Uint8Array(0);
     }
   };
-  await visit(await walk(), []);
+  await visit(await store.walk(), []);
   return files;
 }
 

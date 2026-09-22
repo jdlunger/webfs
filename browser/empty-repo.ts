@@ -20,14 +20,24 @@ export default async function run(browser: Browser): Promise<number> {
   await host.route(context);
   const page = await openApp(context);
   await connectThroughDialog(page, "me/docs");
-
-  await waitUntil("the first push", () => Object.keys(host.files).length > 0);
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(1500);
 
   const errored = (await page.locator(".sync-status-error").count()) > 0;
   checks.note(`status: ${JSON.stringify(await statusText(page))}`);
-  checks.ok("the first sync doesn't error on an empty repository", !errored, String(await statusText(page)));
-  checks.ok("the local notes reached the empty repo", Object.keys(host.files).length > 0, Object.keys(host.files).join(", "));
+  checks.ok("connecting to an empty repository doesn't error", !errored, String(await statusText(page)));
+
+  // A drive backed by a repository starts empty and fills itself by pulling,
+  // so there is nothing to push until something is written here. Which is the
+  // case worth testing anyway: the first commit a repo has ever had.
+  // Two files, so the push has something to send *after* the Contents API
+  // call that starts the repository — with only one, that call is the whole
+  // commit and the git-object path this suite exists to cover never runs.
+  await page.click('.sidebar-header-actions button[title="New file"]');
+  await page.click('.sidebar-header-actions button[title="New file"]');
+  await waitUntil("the first push", () => Object.keys(host.files).length > 1);
+  await page.waitForTimeout(800);
+
+  checks.ok("a file made here reached the empty repo", Object.keys(host.files).length > 0, Object.keys(host.files).join(", "));
   checks.ok("the repository was started through the Contents API", host.contentsPuts === 1, `puts=${host.contentsPuts}`);
   checks.ok(
     "no ref creation was attempted — GitHub refuses that on an empty repo",
@@ -36,9 +46,8 @@ export default async function run(browser: Browser): Promise<number> {
   );
   checks.ok("the branch was then moved forward normally", host.refPatches >= 1, `patches=${host.refPatches}`);
 
-  // The open file gets re-serialised by Milkdown on mount ("* [ ]" where the
-  // seed said "- [ ]"), so one more push is expected. What matters is that it
-  // then stops.
+  // The new file gets opened and re-serialised by Milkdown, so one more push
+  // is expected. What matters is that it then stops.
   await syncAndSettle(page);
   const settled = { ...host.files };
   const commitsBefore = host.commits.size;

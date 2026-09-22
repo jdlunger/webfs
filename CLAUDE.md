@@ -8,11 +8,14 @@ production is a static export (see Deployment below), not this server.
 
 Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
-(Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
-OPFS into the in-memory record), `fs.ts` (pure queries over that record),
-`panes.ts` (which files are open, in which pane), `workspace.ts` (that layout
-remembered in localStorage), `merge.ts` (three-way line merge). Tests are `*.test.ts` at the root (`bun test`) plus `browser/` for
-what only a real browser can exercise (`bun run browser`).
+(Milkdown integration), `drives.ts` (what a drive is, and where its files
+live), `storage.ts` (thin OPFS layer, rooted at a drive's mount), `tree.ts`
+(projects a drive's folder into the in-memory record), `fs.ts` (pure queries
+over that record), `panes.ts` (which files are open, in which pane),
+`workspace.ts` (that layout remembered per drive in localStorage),
+`merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
+(`bun test`) plus `browser/` for what only a real browser can exercise
+(`bun run browser`).
 
 ## Git workflow
 
@@ -151,11 +154,18 @@ strip) swaps Crepe for a textarea holding the file's markdown.
 ## What a reload comes back to (`workspace.ts`)
 
 Which files are open in which pane, which folders are collapsed, and which
-files are shown as source are remembered in localStorage (`webfs:workspace`)
-and restored on load. `workspace.ts` is the store and its validation;
-`App.tsx` holds the state and decides what to do with what comes back.
+files are shown as source are remembered in localStorage
+(`webfs:workspace:<drive id>`) and restored on load. `workspace.ts` is the
+store and its validation; `App.tsx` holds the state and decides what to do
+with what comes back.
 
-- **localStorage, not OPFS**, for the reason `syncConfig.ts` is there: OPFS is
+- **One entry per drive.** Every id in here is a path *within* a drive, and
+  two drives can both hold `Notes/todo.md` — a shared entry would restore
+  tabs onto whatever happened to sit at those paths. Switching drives is
+  therefore a save of the one being left (already written, since the entry is
+  written as it changes) and a restore of the one arrived at, with the gate
+  below closed in between so the cleared state can't be written over either.
+- **localStorage, not OPFS**, for the reason `driveConfig.ts` is there: OPFS is
   the tree that gets pushed to GitHub, and none of this belongs in someone's
   notes repository. It is also per-device *on purpose* — which files you had
   open on a phone is not a fact about the notes, and syncing it would have two
@@ -201,8 +211,8 @@ and restored on load. `workspace.ts` is the store and its validation;
   effect deliberately doesn't depend on `fs` — that changes on every keystroke
   — and reads it through a ref instead, so a stale id can survive until the
   next change sweeps it up. Writing is also gated on the restore having
-  happened, or the component's empty initial state would erase the entry it is
-  about to read.
+  happened, or the component's empty initial state — or the cleared state a
+  drive switch leaves behind — would erase the entry it is about to read.
 - **Two tabs share one entry, and the last one to change something wins.**
   There is nothing to merge: a layout is what one window is showing. A per-tab
   store (sessionStorage) would forget everything the moment the browser
@@ -230,6 +240,85 @@ hamburger button. Notes learned the hard way:
   column and need phone-width overrides (see the `@media (max-width: 768px)`
   block in `index.css`).
 
+## Drives
+
+`drives.ts` (pure: what a drive is and where it lives), `driveConfig.ts` (the
+registry, in localStorage), `DrivePanel.tsx` (the switcher at the foot of the
+sidebar), and the drive state at the top of `App.tsx`. Driven end to end by
+`bun run browser drives`.
+
+A **drive** is a source-of-truth folder. There are two kinds — a plain folder
+in OPFS, and a branch in a GitHub repository — and the difference between them
+is smaller than it looks: a GitHub drive's files are in OPFS too, because sync
+reconciles *into* the local store and reads back out of it. So a drive is a
+mount point, plus a remote for the kind that has one.
+
+- **Three things are the same string, on purpose.** A drive's id
+  (`opfs/notes`, `jdlunger/webfs`), its URL (`/opfs/notes/Notes/todo.md`) and
+  its mount (`drives/opfs/notes/`). An id is always exactly *two* segments,
+  which is what lets a URL be split without consulting the registry: take two,
+  the rest is the file path. That matters because the drive has to be resolved
+  before a path inside it means anything — the tree it names hasn't been read
+  yet.
+- **Node ids stay relative to their drive.** The mount is applied at the
+  `storage.ts` boundary and nowhere else, so `fs.ts`, `panes.ts`, `assets.ts`,
+  the `Media/` fallback and the paths sync sends to GitHub all carry on meaning
+  what they always meant. That is the whole reason this change didn't touch
+  them. `storeAt(mount)` returns the old module-level API bound to a folder;
+  `rootStore` is the whole of OPFS and is used only for drive bookkeeping.
+- **`opfs` is a reserved GitHub owner.** A repository owned by someone called
+  `opfs` would make `/opfs/notes` ambiguous between a local drive and that
+  owner's `notes` repo, and no spelling of the URL resolves it without a
+  lookup. `validateDrive` refuses it.
+- **The branch is not part of a drive's identity.** A repository is one drive,
+  whichever branch it points at; re-pointing it is an edit, not a second drive.
+  Two branches as two drives would need a third URL segment, and a branch name
+  can itself contain a slash. The sync base is still keyed by branch, so
+  switching branch starts from no base and switching back finds the old one.
+- **Everything lives under `drives/`**, never at the OPFS root. That's what
+  keeps a local drive called `Notes` from colliding with a leftover `Notes`
+  folder from the layout that predates drives — which is also why upgrading
+  needs no migration: what was at the root simply stops being addressable, and
+  the add-drive dialog offers to delete it once you've seen your files come
+  back. A device that was syncing keeps its repository, branch and token (the
+  old `webfs:github:config` is read once and becomes a GitHub drive) but drops
+  its sync base, so the first pass re-pulls the whole repository into the new
+  mount.
+- **Only the active drive syncs.** A drive you aren't looking at has nothing on
+  screen to be stale against, and polling every configured repository on the
+  same 60s timer would multiply a rate-limited handful of calls by however many
+  drives someone has collected. Arriving at a drive syncs it, which is the same
+  rule the app has always applied on load.
+- **Switching drives is the same work as starting the app**, and `App.tsx`
+  treats it that way: queued writes are flushed *before* the switch (a write is
+  keyed by a path, and the same path is a different file in the next drive),
+  then `pending`, `baseContent`, `externalEdits`, `textViews` and `collapsed`
+  are all cleared and the tree is re-read. What was open comes back from that
+  drive's own workspace entry (see below), so switching away and back — or
+  reloading — lands on the same tabs.
+- **The drive is in the pane's React key**, for the same reason. Without it,
+  React keeps the editor instance across a switch and hands it the new drive's
+  store for the old drive's document — and a pasted image goes into the wrong
+  folder.
+- **Every BroadcastChannel message names its drive**, and a tab ignores the
+  ones about a drive it isn't showing. `{ kind: "drives" }` is the registry
+  itself changing, which is the one message that isn't about a drive's
+  contents.
+- **A first visit creates one local drive** (`DEFAULT_DRIVE`, `opfs/notes`) and
+  seeds it, so arriving at the app still lands in something to write in. A
+  drive *you* add starts empty: `markSeeded` is called the moment it's created,
+  which is what stops three starter notes appearing in every folder anyone ever
+  adds. An empty registry that exists is respected — the empty state is for
+  someone who removed every drive, not for someone who has just arrived.
+- **Removing a drive forgets it; it doesn't delete the folder.** "Remove" that
+  meant "delete everything, with no undo" is not a button to put next to a
+  drive's name.
+- **There is no way to copy files between drives**, so a GitHub drive can only
+  be filled by pulling or by writing in it. Connecting a repository no longer
+  publishes what was already on the device — before drives, a first sync pushed
+  the local store, and now a GitHub drive starts empty. Worth knowing before
+  someone expects "point webfs at a new repo" to upload their notes.
+
 ## Storage (OPFS) and multiple tabs
 
 **OPFS is the only store, and the directory tree is the filesystem.**
@@ -238,7 +327,12 @@ file's text, and a directory tree expresses all four — so `storage.ts` is a
 thin layer over OPFS and nothing else. Whatever is on disk is exactly what the
 app shows, and folders are inspectable and exportable as real directories.
 
-- **A node's id is its path.** At any instant a file has exactly one path, and
+Everything below is about *one drive*. Each one is a folder under `drives/`
+(see Drives above), and `storeAt` binds this API to it; paths here are
+relative to that mount, so nothing in this section changes meaning because
+there is more than one.
+
+- **A node's id is its path within its drive.** At any instant a file has exactly one path, and
   `isValidName` forbids `/` in a segment, so the record is keyed by the
   segments joined with `/` and there is no separate identity to allocate,
   track or translate. `segmentsOf` is a split, not a walk up the parents;
@@ -316,7 +410,9 @@ app shows, and folders are inspectable and exportable as real directories.
   source of truth for what the app shows; sync reconciles into it and reads
   back out of it, never around it.
 - **Seeding is deduplicated across overlapping calls** (`loading` in
-  `tree.ts`). "Is the store empty, and if so fill it" isn't atomic: two calls
+  `tree.ts`, keyed by mount — switching drives starts a second load while the
+  first may still be settling, and those two are about different folders).
+  "Is the store empty, and if so fill it" isn't atomic: two calls
   both walk an empty store and both seed it, and since `createDirectory`
   uniquifies rather than reusing, a first visit ended up with `Projects` *and*
   `Projects 2`. React's StrictMode does exactly that in development, so this
@@ -329,10 +425,11 @@ app shows, and folders are inspectable and exportable as real directories.
 
 ## GitHub sync (two-way, personal access token)
 
-A branch in a GitHub repository is a second replica of the store, kept in
+A GitHub drive's branch is a second replica of that drive's folder, kept in
 step with OPFS in both directions. `github.ts` (REST client), `sync.ts` (the
-algorithm), `syncConfig.ts` (localStorage), `useGitHubSync.ts` (when it runs)
-and `SyncPanel.tsx` (the strip at the foot of the sidebar).
+algorithm), `driveConfig.ts` (localStorage), `useDriveSync.ts` (when it runs)
+and `DrivePanel.tsx` (the strip at the foot of the sidebar). Only the drive
+you're looking at syncs — see Drives above.
 
 - **It's the same three-way model as `merge.ts`**, with the other tab replaced
   by a branch: `base` is a path → blob-sha snapshot of what was last in sync,
@@ -422,12 +519,12 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   there's no way around it for a backend-less app: no server, so no session
   cookie to hide behind and no OAuth secret that could stay secret. The
   settings dialog says so.
-- **The repo name in the strip is a link to the branch on GitHub**
-  (`branchUrl`), pointing at `/tree/<branch>` rather than the repo root so it
-  lands on what's actually being synced. Settings moved to their own `⚙`
-  button when the name became a link — the name now leads where it says.
+- **`branchUrl` points at `/tree/<branch>`** rather than the repo root, so a
+  link lands on what's actually being synced. The drive's name in the strip is
+  the switcher now rather than that link, because switching drives is what you
+  come to that corner to do; settings are the `⚙` beside it.
 - **The dialog links to a pre-filled token page** (`tokenSetupUrl` in
-  `SyncPanel.tsx`). GitHub's fine-grained token form takes a template URL, so
+  `DrivePanel.tsx`). GitHub's fine-grained token form takes a template URL, so
   `contents=write` (which implies read; GitHub adds `metadata:read` itself),
   `target_name`, `name` and `expires_in` are all filled in from what the
   dialog already knows. Two things to keep in mind before editing it: there
@@ -436,13 +533,14 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   everything; and the expiry is set explicitly because the page's own default
   is 30 days, which would quietly stop sync working in a month. These are
   GitHub's parameter names, not ours, so a renamed one fails silently (an
-  empty form, no error) — `syncPanel.test.ts` pins them. See
+  empty form, no error) — `drivePanel.test.ts` pins them. See
   https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-- **Seeding is skipped when sync is configured** (`loadTree({ seed })`). A
-  synced device's store is empty because it hasn't pulled yet, and seeding
-  would push three starter notes into someone's established notes repo.
-- **A sync is serialized across tabs** with a Web Lock (`ifAvailable`, so a
-  second tab skips rather than queues), flushes pending editor writes first
+- **A GitHub drive is never seeded** (`shouldSeed` in `driveConfig.ts`). It is
+  empty because it hasn't pulled yet, and seeding would push three starter
+  notes into someone's established notes repo.
+- **A sync is serialized across tabs** with a Web Lock named for the drive
+  (`ifAvailable`, so a second tab skips rather than queues — but two *drives*
+  have nothing to serialise against each other), flushes pending editor writes first
   for the same reason `mutate()` does, and applies what it changed through
   `applySyncResult` in `App.tsx` — which bumps `externalEdit` for the open
   file and announces on the BroadcastChannel, since other tabs have no other
@@ -501,7 +599,7 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
 - `bun test` covers the algorithm against an in-memory branch and store
   (`sync.test.ts`), the REST wiring against a stubbed `fetch`
   (`github.test.ts`), and the dialog's two pure pieces — repository parsing
-  and the token link — in `syncPanel.test.ts`. What none of them covers is
+  and the token link — in `drivePanel.test.ts`. What none of them covers is
   those pieces touching real OPFS and a real editor: that's `bun run browser`
   (see Browser suites below), which drives Chromium against an intercepted
   `api.github.com`.
@@ -686,7 +784,8 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`, `vault`, `view`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `wikilinks`, `vault`,
+  `view`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
@@ -722,6 +821,14 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   waiting on the asset alone catches the note mid-write.
 - **`opfsFiles` skips entries that vanish under it.** The app writes while
   the walker reads; a half-created file is not an answer worth returning.
+- **`opfsFiles` is about one drive, and refuses to guess between several.** It
+  returns drive-relative paths, because that's what the app's ids and the
+  repository's paths both are — an assertion written against
+  `drives/me/notes/Notes/todo.md` would be testing the helper's arithmetic.
+  With no drive named it walks the only one there is and throws if a context
+  has two, since merging them would turn a file written to the wrong drive
+  into a passing test. `writeOpfsFile`/`writeOpfsBytes` put something into a
+  drive from outside the app, standing in for another tab or a copied vault.
 - Browsers make things *look* fine that aren't: a `blob:` image still renders
   after a reload from the in-memory image cache while the URL itself is dead.
   Assert on the thing (`fetch` the URL, compare bytes), not on the pixels.

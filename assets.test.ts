@@ -5,7 +5,7 @@
  */
 import { test, expect } from "bun:test";
 import { assetCandidates, assetName, isAbsoluteUrl, mimeOf, resolveAssetPath } from "./src/assets";
-import { branchUrl } from "./src/SyncPanel";
+import { branchUrl } from "./src/DrivePanel";
 
 test("a link resolves against the folder of the note it appears in", () => {
   // Exactly what GitHub does for Notes/todo.md referencing assets/shot.png.

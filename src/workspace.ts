@@ -1,9 +1,13 @@
 /**
  * What the app itself looks like — which files are open in which pane, which
  * folders are collapsed, which files are shown as source — remembered across
- * reloads.
+ * reloads, for each drive separately.
  *
- * localStorage, not OPFS, for the same reason `syncConfig.ts` is there: OPFS
+ * Per drive because every id in here is a path *within* one (see drives.ts):
+ * two drives can both hold `Notes/todo.md`, and one entry shared between them
+ * would restore tabs on whatever happened to sit at those paths.
+ *
+ * localStorage, not OPFS, for the same reason `driveConfig.ts` is there: OPFS
  * is the tree that gets pushed to GitHub, and none of this belongs in
  * someone's notes repository. It's per-device UI state, and it's also *per
  * device on purpose* — which files you had open on a phone is not a fact
@@ -18,8 +22,9 @@
  * the invariants the rest of the app leans on.
  */
 import { type Pane, type PaneLayout, MAX_PANES } from "./panes";
+import { driveId, type Drive } from "./drives";
 
-const WORKSPACE_KEY = "webfs:workspace";
+const WORKSPACE_PREFIX = "webfs:workspace:";
 
 /**
  * Bumped when the stored shape changes meaning. An entry that doesn't match
@@ -117,18 +122,20 @@ export function serializeWorkspace(workspace: Workspace): string {
   });
 }
 
+const workspaceKey = (drive: Drive) => WORKSPACE_PREFIX + driveId(drive);
+
 /** Private browsing and blocked-cookie settings make localStorage throw. */
-export function loadWorkspace(): Workspace | null {
+export function loadWorkspace(drive: Drive): Workspace | null {
   try {
-    return parseWorkspace(localStorage.getItem(WORKSPACE_KEY));
+    return parseWorkspace(localStorage.getItem(workspaceKey(drive)));
   } catch {
     return null;
   }
 }
 
-export function saveWorkspace(workspace: Workspace): void {
+export function saveWorkspace(drive: Drive, workspace: Workspace): void {
   try {
-    localStorage.setItem(WORKSPACE_KEY, serializeWorkspace(workspace));
+    localStorage.setItem(workspaceKey(drive), serializeWorkspace(workspace));
   } catch {
     /* nothing to do: the app just opens the way it always used to */
   }

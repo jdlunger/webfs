@@ -3,7 +3,7 @@ import { Crepe } from "@milkdown/crepe";
 import { editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
 import { $node, $remark } from "@milkdown/kit/utils";
 import { segmentsOf } from "./fs";
-import { createFile, readBytes, writeFile } from "./storage";
+import type { Store } from "./storage";
 import { ASSET_DIR, assetCandidates, assetName, isAbsoluteUrl, mimeOf } from "./assets";
 import { preserveUnchanged } from "./preserve";
 import {
@@ -45,6 +45,12 @@ export type EditorView = "rich" | "text";
 interface EditorProps {
   file: FSNode | null;
   view: EditorView;
+  /**
+   * The active drive's files. Passed rather than imported: a pasted image and
+   * a binary preview are reads and writes against one drive's folder, and
+   * which drive that is belongs to App, not to the editor.
+   */
+  store: Store;
   /** Counter bumped when another tab's edit has been merged into `file`. */
   externalEdit: number;
   /** Carries the id, because two panes can be editing two different files. */
@@ -55,11 +61,12 @@ interface EditorProps {
 
 interface MilkdownEditorProps {
   file: FSNode;
+  store: Store;
   onChange: (id: string, content: string) => void;
   onAssetAdded: () => void;
 }
 
-function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
+function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -83,9 +90,9 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
      */
     const storeImage = async (image: File): Promise<string> => {
       const dir = segmentsOf(file.id).slice(0, -1);
-      const name = await createFile([...dir, ASSET_DIR], assetName(image.name));
+      const name = await store.createFile([...dir, ASSET_DIR], assetName(image.name));
       const bytes = new Uint8Array(await image.arrayBuffer());
-      await writeFile([...dir, ASSET_DIR, name], bytes);
+      await store.writeFile([...dir, ASSET_DIR, name], bytes);
       onAssetAddedRef.current();
       // Encoded, because a space in the name would otherwise end the URL as
       // far as markdown is concerned.
@@ -113,7 +120,7 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
 
       const pending = (async () => {
         for (const path of assetCandidates(file.id, url)) {
-          const bytes = await readBytes(path);
+          const bytes = await store.readBytes(path);
           if (!bytes) continue;
           const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeOf(url) }));
           objectUrls.push(objectUrl);
@@ -374,9 +381,13 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
       for (const url of objectUrls) URL.revokeObjectURL(url);
     };
     // File identity, not content, controls (re)mount: the editor owns the
-    // document once created and content flows out via markdownUpdated.
+    // document once created and content flows out via markdownUpdated. The
+    // store is in here because a file id is only unique *within* a drive —
+    // two drives can both hold "Notes/todo.md", and an instance carried over
+    // from one to the other would write a pasted image into the wrong folder.
+    // App memoizes it per drive, so this is a switch of drives and nothing else.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.id]);
+  }, [file.id, store]);
 
   return <div className="milkdown-root" ref={containerRef} />;
 }
@@ -447,7 +458,7 @@ export function ViewToggle({
  * back on the first keystroke, so an image opened by accident would be
  * destroyed by looking at it. Shown instead of edited.
  */
-function BinaryFile({ file }: { file: FSNode }) {
+function BinaryFile({ file, store }: { file: FSNode; store: Store }) {
   const [preview, setPreview] = useState<string | null>(null);
   const type = mimeOf(file.name);
 
@@ -455,7 +466,7 @@ function BinaryFile({ file }: { file: FSNode }) {
     if (!type.startsWith("image/")) return;
     let url: string | null = null;
     let cancelled = false;
-    void readBytes(segmentsOf(file.id)).then(bytes => {
+    void store.readBytes(segmentsOf(file.id)).then(bytes => {
       if (cancelled || !bytes) return;
       url = URL.createObjectURL(new Blob([bytes], { type }));
       setPreview(url);
@@ -464,7 +475,7 @@ function BinaryFile({ file }: { file: FSNode }) {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [file.id, type]);
+  }, [file.id, store, type]);
 
   return (
     <div className="editor">
@@ -476,7 +487,7 @@ function BinaryFile({ file }: { file: FSNode }) {
   );
 }
 
-export function Editor({ file, view, externalEdit, onChange, onAssetAdded }: EditorProps) {
+export function Editor({ file, view, store, externalEdit, onChange, onAssetAdded }: EditorProps) {
   if (!file) {
     return (
       <div className="editor editor-empty">
@@ -485,7 +496,7 @@ export function Editor({ file, view, externalEdit, onChange, onAssetAdded }: Edi
     );
   }
 
-  if (file.binary) return <BinaryFile file={file} />;
+  if (file.binary) return <BinaryFile file={file} store={store} />;
 
   // Content is fetched when a file is opened, so a file node can exist before
   // its text does.
@@ -517,6 +528,7 @@ export function Editor({ file, view, externalEdit, onChange, onAssetAdded }: Edi
         <MilkdownEditor
           key={`${file.id}:${externalEdit}`}
           file={file}
+          store={store}
           onChange={onChange}
           onAssetAdded={onAssetAdded}
         />

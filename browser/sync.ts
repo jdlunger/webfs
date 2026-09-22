@@ -10,11 +10,13 @@ import {
   chooseFromContextMenu,
   FakeGitHub,
   asText,
-  connectThroughDialog,
+  connectedContext,
   openApp,
   openFile,
   opfsFiles,
+  readOpfsFile,
   setOpfs,
+  writeOpfsFile,
   statusText,
   syncAndSettle,
   typeInEditor,
@@ -26,12 +28,17 @@ export default async function run(browser: Browser): Promise<number> {
   checks.heading();
 
   const host = new FakeGitHub();
-  await host.seed({ "Shared/from-github.md": "# written on another device" });
+  // Two files, not one: a drive is exactly its branch now, and a suite whose
+  // branch holds a single file can't delete it without emptying the store —
+  // which trips the eviction guard (an empty store with a base is read as
+  // lost data, not as a deletion) and tests something else entirely.
+  await host.seed({
+    "Shared/from-github.md": "# written on another device",
+    "Notes/keep.md": "# a file nothing here touches",
+  });
 
-  const context = await browser.newContext();
-  await host.route(context);
+  const context = await connectedContext(browser, host);
   const page = await openApp(context);
-  await connectThroughDialog(page);
   await waitUntil("the first sync", async () => !!(await statusText(page))?.match(/pulled|pushed|Up to date/i));
 
   const local = await opfsFiles(page);
@@ -40,7 +47,13 @@ export default async function run(browser: Browser): Promise<number> {
     asText(local["Shared/from-github.md"] ?? "") === "# written on another device",
     Object.keys(local).join(", "),
   );
-  checks.ok("the first sync pushes the local notes to GitHub", !!host.files["Notes/welcome.md"], Object.keys(host.files).join(", "));
+  // A drive backed by a repository holds the repository and nothing else: no
+  // starter notes are seeded into one, so this is what it should have.
+  checks.ok(
+    "and nothing else: the drive is the branch",
+    JSON.stringify(Object.keys(local).sort()) === JSON.stringify(Object.keys(host.files).sort()),
+    Object.keys(local).join(", "),
+  );
   checks.ok("the pulled file shows up in the sidebar", (await page.locator('.tree-row:has-text("from-github.md")').count()) > 0);
 
   // A local edit reaches the branch.
@@ -69,15 +82,8 @@ export default async function run(browser: Browser): Promise<number> {
 
   // Both sides edit at once.
   await host.seed({ "Shared/from-github.md": `${host.text("Shared/from-github.md")}\n\ntail from GitHub` });
-  await page.evaluate(async () => {
-    const root = await navigator.storage.getDirectory();
-    const dir = await root.getDirectoryHandle("Shared");
-    const handle = await dir.getFileHandle("from-github.md");
-    const text = await (await handle.getFile()).text();
-    const writable = await handle.createWritable();
-    await writable.write(`head edited locally\n${text.split("\n").slice(1).join("\n")}`);
-    await writable.close();
-  });
+  const before = await readOpfsFile(page, "Shared/from-github.md");
+  await writeOpfsFile(page, "Shared/from-github.md", `head edited locally\n${before.split("\n").slice(1).join("\n")}`);
   await syncAndSettle(page);
   const merged = host.text("Shared/from-github.md");
   checks.ok(
@@ -100,6 +106,16 @@ export default async function run(browser: Browser): Promise<number> {
     (await page.locator('.tree-row:has-text("new-on-github.md")').count()) > 0,
   );
 
+  // Two files changed at once, which is what a commit title abbreviates.
+  await writeOpfsFile(page, "Shared/one.md", "# one");
+  await writeOpfsFile(page, "Shared/two.md", "# two");
+  await syncAndSettle(page);
+  checks.ok(
+    "two files changed at once go up in one commit",
+    !!host.files["Shared/one.md"] && !!host.files["Shared/two.md"],
+    Object.keys(host.files).join(", "),
+  );
+
   // Commit titles.
   const titles = host.titles();
   checks.note(`commit titles written: ${titles.map(t => JSON.stringify(t)).join(", ")}`);
@@ -108,10 +124,8 @@ export default async function run(browser: Browser): Promise<number> {
   checks.ok("a multi-file commit ends with an ellipsis", titles.some(t => t.endsWith(" …")), titles.join(" | "));
 
   // A second device converges on the same tree.
-  const second = await browser.newContext();
-  await host.route(second);
+  const second = await connectedContext(browser, host);
   const page2 = await openApp(second);
-  await connectThroughDialog(page2);
   const converged = await waitUntil("the second device to converge", async () =>
     JSON.stringify(Object.keys(await opfsFiles(page2)).sort()) === JSON.stringify(Object.keys(host.files).sort()),
   );
@@ -121,7 +135,7 @@ export default async function run(browser: Browser): Promise<number> {
   // A device that lost its store refills, rather than emptying the branch.
   await setOpfs(page2, {});
   await page2.reload();
-  await page2.waitForSelector(".sync-repo", { timeout: 15_000 });
+  await page2.waitForSelector(".drive-switch", { timeout: 15_000 });
   const refilled = await waitUntil("the wiped device to refill", async () =>
     JSON.stringify(Object.keys(await opfsFiles(page2)).sort()) === JSON.stringify(Object.keys(host.files).sort()),
   );

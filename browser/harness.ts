@@ -77,7 +77,13 @@ export function launchBrowser(): Promise<Browser> {
   return chromium.launch(executablePath ? { executablePath } : {});
 }
 
-/** Starts a context with the sync connection already configured. */
+/**
+ * Starts a context holding one drive, backed by the fake repository.
+ *
+ * One drive and no other, deliberately: the default local drive a first visit
+ * would create is written by the app on startup, and a context that had both
+ * would seed starter notes into a folder no assertion here is about.
+ */
 export async function connectedContext(browser: Browser, host: FakeGitHub, repo = "me/notes"): Promise<BrowserContext> {
   const [owner, name] = repo.split("/");
   const context = await browser.newContext();
@@ -85,8 +91,8 @@ export async function connectedContext(browser: Browser, host: FakeGitHub, repo 
   await context.addInitScript(
     ([o, r]) =>
       localStorage.setItem(
-        "webfs:github:config",
-        JSON.stringify({ owner: o, repo: r, branch: "main", token: "token-for-tests", auto: true }),
+        "webfs:drives",
+        JSON.stringify([{ kind: "github", owner: o, repo: r, branch: "main", token: "token-for-tests", auto: true }]),
       ),
     [owner, name],
   );
@@ -95,9 +101,44 @@ export async function connectedContext(browser: Browser, host: FakeGitHub, repo 
 
 // --- reading and writing OPFS from the page ----------------------------------
 
-/** Every file in the page's OPFS, as path → base64. Binary-safe. */
-export function opfsFiles(page: Page): Promise<Record<string, string>> {
-  return page.evaluate(async () => {
+/**
+ * Every file in one drive, as a drive-relative path → base64. Binary-safe.
+ *
+ * Paths are relative to the drive's mount, because that's what the app's own
+ * ids and the repository's paths both are — an assertion written against
+ * `drives/me/notes/Notes/todo.md` would be testing this helper's arithmetic.
+ *
+ * With no drive named it walks the only one there is, and refuses to guess
+ * when a context has several: merging two drives' files into one record would
+ * turn a file written to the wrong drive into a passing test.
+ */
+export function opfsFiles(page: Page, drive?: string): Promise<Record<string, string>> {
+  return page.evaluate(async id => {
+    const root = await navigator.storage.getDirectory();
+    let drives: any;
+    try {
+      drives = await root.getDirectoryHandle("drives");
+    } catch {
+      return {}; // No drive has been created yet.
+    }
+
+    // A drive is two segments: "opfs/<name>", or "<owner>/<repo>".
+    const found: string[] = [];
+    for await (const [owner, ownerDir] of drives as any) {
+      if (ownerDir.kind !== "directory") continue;
+      for await (const [name, nameDir] of ownerDir as any) {
+        if (nameDir.kind === "directory") found.push(`${owner}/${name}`);
+      }
+    }
+    const wanted = id ?? found[0];
+    if (id === undefined && found.length > 1) {
+      throw new Error(`opfsFiles: this context has ${found.length} drives (${found.join(", ")}); name the one you mean`);
+    }
+    if (wanted === undefined) return {};
+
+    let dir = drives;
+    for (const segment of wanted.split("/")) dir = await dir.getDirectoryHandle(segment);
+
     const files: Record<string, string> = {};
     const walk = async (dir: any, prefix: string) => {
       for await (const [name, handle] of dir) {
@@ -116,14 +157,75 @@ export function opfsFiles(page: Page): Promise<Record<string, string>> {
         }
       }
     };
-    await walk(await navigator.storage.getDirectory(), "");
+    await walk(dir, "");
     return files;
-  });
+  }, drive);
 }
 
 export const asText = (base64: string) => Buffer.from(base64, "base64").toString("utf-8");
 
-/** Replaces the page's OPFS wholesale — used to stand in for an evicted store. */
+/**
+ * Writes into a drive from outside the app, to stand in for whatever changed
+ * it — another tab, a sync landing, a vault copied onto the device. Paths are
+ * drive-relative, like `opfsFiles`'s, and with no drive named it writes into
+ * the only one there is.
+ */
+export function writeOpfsFile(page: Page, path: string, text: string, drive?: string): Promise<void> {
+  return writeInDrive(page, path, { text }, drive);
+}
+
+/** The same, for a file that isn't text. */
+export function writeOpfsBytes(page: Page, path: string, base64: string, drive?: string): Promise<void> {
+  return writeInDrive(page, path, { base64 }, drive);
+}
+
+function writeInDrive(
+  page: Page,
+  path: string,
+  content: { text?: string; base64?: string },
+  drive?: string,
+): Promise<void> {
+  return page.evaluate(
+    async ([filePath, text, base64, id]) => {
+      const root = await navigator.storage.getDirectory();
+      const drives = await root.getDirectoryHandle("drives", { create: true });
+      let mount = id;
+      if (mount === undefined) {
+        for await (const [owner, ownerDir] of drives as any) {
+          if ((ownerDir as any).kind !== "directory") continue;
+          for await (const [name, nameDir] of ownerDir as any) {
+            if ((nameDir as any).kind === "directory") mount = `${owner}/${name}`;
+          }
+        }
+      }
+      if (mount === undefined) throw new Error("writeOpfsFile: no drive to write into");
+
+      let dir: any = drives;
+      const segments = [...mount.split("/"), ...filePath!.split("/")];
+      for (const segment of segments.slice(0, -1)) dir = await dir.getDirectoryHandle(segment, { create: true });
+      const writable = await (await dir.getFileHandle(segments.at(-1)!, { create: true })).createWritable();
+      await writable.write(
+        base64 === undefined
+          ? new TextEncoder().encode(text!)
+          : Uint8Array.from(atob(base64), character => character.charCodeAt(0)),
+      );
+      await writable.close();
+    },
+    [path, content.text, content.base64, drive] as [string, string | undefined, string | undefined, string | undefined],
+  );
+}
+
+/** A file's text, read straight out of a drive. */
+export async function readOpfsFile(page: Page, path: string, drive?: string): Promise<string> {
+  const file = (await opfsFiles(page, drive))[path];
+  return file === undefined ? "" : asText(file);
+}
+
+/**
+ * Empties the page's OPFS wholesale — used to stand in for an evicted store.
+ * Paths are from the OPFS root, drives directory included, so this is only
+ * ever called with `{}`.
+ */
 export function setOpfs(page: Page, files: Record<string, string>): Promise<void> {
   return page.evaluate(async entries => {
     const root = await navigator.storage.getDirectory();
@@ -309,16 +411,36 @@ export class FakeGitHub {
 
 // --- driving the app ---------------------------------------------------------
 
-export async function openApp(context: BrowserContext): Promise<Page> {
+export async function openApp(context: BrowserContext, path = ""): Promise<Page> {
   const page = await context.newPage();
-  await page.goto(APP_URL);
+  await page.goto(APP_URL + path);
   return page;
 }
 
-/** Fills in the sync dialog, as someone setting it up would. */
+/** Adds a local drive through the picker and dialog, as someone would. */
+export async function addLocalDrive(page: Page, name: string): Promise<void> {
+  await page.waitForSelector(".drive-switch", { timeout: 15_000 });
+  await page.click(".drive-switch");
+  await page.click(".drive-picker-add");
+  await page.click('.drive-kind-choice button:has-text("This device")');
+  await page.fill('.modal label:has-text("Name") input', name);
+  await page.click(".modal-primary");
+  await page.waitForSelector(".modal", { state: "detached", timeout: 15_000 });
+}
+
+/** Switches to a drive by name, through the picker. */
+export async function switchToDrive(page: Page, name: string): Promise<void> {
+  await page.click(".drive-switch");
+  await page.locator(`.drive-picker-item:has-text("${name}")`).first().click();
+  await page.waitForTimeout(600);
+}
+
+/** Adds a GitHub drive through the picker and dialog, as someone would. */
 export async function connectThroughDialog(page: Page, repo = "me/notes"): Promise<void> {
-  await page.waitForSelector(".sync-connect", { timeout: 15_000 });
-  await page.click(".sync-connect");
+  await page.waitForSelector(".drive-switch", { timeout: 15_000 });
+  await page.click(".drive-switch");
+  await page.click(".drive-picker-add");
+  await page.click('.drive-kind-choice button:has-text("GitHub")');
   await page.fill('.modal label:has-text("Repository") input', repo);
   await page.fill('.modal label:has-text("Personal access token") input', "token-for-tests");
   await page.click(".modal-primary");

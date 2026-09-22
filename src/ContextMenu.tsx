@@ -16,6 +16,8 @@ export interface MenuItem {
   submenu?: MenuItem[];
   /** Draws a separator above this item. */
   dividerBefore?: boolean;
+  /** Marks the row as the one currently in effect (the drive you're on). */
+  selected?: boolean;
   danger?: boolean;
   disabled?: boolean;
 }
@@ -141,11 +143,14 @@ function MenuRow({
     <>
       {item.dividerBefore ? <div className="context-menu-divider" /> : null}
       <div
-        className={`context-menu-item ${disabled ? "is-disabled" : ""} ${item.danger ? "is-danger" : ""}`}
+        className={`context-menu-item ${disabled ? "is-disabled" : ""} ${item.danger ? "is-danger" : ""} ${
+          item.selected ? "is-selected" : ""
+        }`}
         onMouseEnter={() => !disabled && onOpenSubmenu()}
         onClick={activate}
       >
         <span className="context-menu-label">{item.label}</span>
+        {item.selected ? <span className="context-menu-check">✓</span> : null}
         {item.submenu ? <span className="context-menu-arrow">›</span> : null}
         {item.submenu && open && !disabled ? (
           <div className={`context-submenu ${flip ? "context-submenu-flip" : ""}`}>

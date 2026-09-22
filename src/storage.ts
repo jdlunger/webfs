@@ -13,6 +13,13 @@
  *
  * Locks are taken only around file writes, and give up quickly, so reading a
  * file another tab is saving never blocks.
+ *
+ * Everything here is reached through a `Store`, which is this API bound to a
+ * mount point — the folder one drive's files live in (see drives.ts). Paths
+ * passed to a store are relative to its mount, so nothing above this file has
+ * to know where a drive sits; the mount is prefixed here and nowhere else.
+ * Write locks are named by the absolute path, so two drives can't contend
+ * over the same name.
  */
 
 export type Path = readonly string[];
@@ -112,8 +119,15 @@ export interface WalkEntry {
 }
 
 /** Reads the whole tree. Cheap for a notes app; the only index that exists. */
-export async function walk(path: Path = []): Promise<WalkEntry[]> {
-  const dir = await dirAt(path);
+async function walk(path: Path = []): Promise<WalkEntry[]> {
+  let dir: FileSystemDirectoryHandle;
+  try {
+    dir = await dirAt(path);
+  } catch {
+    // A drive whose mount hasn't been created yet, or whose storage was
+    // evicted, is empty rather than broken — the registry outlives the files.
+    return [];
+  }
   const entries: WalkEntry[] = [];
   for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
     entries.push({
@@ -125,7 +139,7 @@ export async function walk(path: Path = []): Promise<WalkEntry[]> {
   return entries;
 }
 
-export async function readFile(path: Path): Promise<string | null> {
+async function readFile(path: Path): Promise<string | null> {
   try {
     const dir = await dirAt(parentOf(path));
     return await (await (await dir.getFileHandle(nameOf(path))).getFile()).text();
@@ -143,7 +157,7 @@ export async function readFile(path: Path): Promise<string | null> {
  * U+FFFD and write the damage back on the next save. Anything that might not
  * be text goes through this.
  */
-export async function readBytes(path: Path): Promise<Bytes | null> {
+async function readBytes(path: Path): Promise<Bytes | null> {
   try {
     const dir = await dirAt(parentOf(path));
     const file = await (await dir.getFileHandle(nameOf(path))).getFile();
@@ -181,7 +195,7 @@ async function withWriteLock(name: string, write: () => Promise<void>): Promise<
 }
 
 /** Text or bytes: OPFS writables take either, and both are files here. */
-export function writeFile(path: Path, content: string | Bytes): Promise<WriteResult> {
+function writeFile(path: Path, content: string | Bytes): Promise<WriteResult> {
   return withWriteLock(`webfs:${path.join("/")}`, async () => {
     const dir = await dirAt(parentOf(path), true);
     const handle = await dir.getFileHandle(nameOf(path), { create: true });
@@ -198,7 +212,7 @@ export function writeFile(path: Path, content: string | Bytes): Promise<WriteRes
   });
 }
 
-export async function createFile(parent: Path, desired: string): Promise<string> {
+async function createFile(parent: Path, desired: string): Promise<string> {
   requireValid(desired);
   const dir = await dirAt(parent, true);
   const name = await uniqueName(dir, desired);
@@ -207,7 +221,7 @@ export async function createFile(parent: Path, desired: string): Promise<string>
   return name;
 }
 
-export async function createDirectory(parent: Path, desired: string): Promise<string> {
+async function createDirectory(parent: Path, desired: string): Promise<string> {
   requireValid(desired);
   const dir = await dirAt(parent, true);
   const name = await uniqueName(dir, desired);
@@ -215,7 +229,7 @@ export async function createDirectory(parent: Path, desired: string): Promise<st
   return name;
 }
 
-export async function removeEntry(path: Path): Promise<void> {
+async function removeEntry(path: Path): Promise<void> {
   const dir = await dirAt(parentOf(path));
   await dir.removeEntry(nameOf(path), { recursive: true });
 }
@@ -270,17 +284,106 @@ async function relocate(path: Path, newParent: Path, newName: string): Promise<v
   await fromDir.removeEntry(name, { recursive: true });
 }
 
-export function renameEntry(path: Path, newName: string): Promise<void> {
+function renameEntry(path: Path, newName: string): Promise<void> {
   return relocate(path, parentOf(path), newName);
 }
 
-export function moveEntry(path: Path, newParent: Path): Promise<void> {
+function moveEntry(path: Path, newParent: Path): Promise<void> {
   return relocate(path, newParent, nameOf(path));
+}
+
+// --- stores ------------------------------------------------------------------
+
+/**
+ * The filesystem as one drive sees it: the API above, rooted at a mount.
+ *
+ * An interface rather than a set of free functions because there is now more
+ * than one of them on screen at once — a sync writes into the drive it is
+ * syncing while the editor writes into the drive you are looking at, and
+ * neither should be able to reach the other by passing a path.
+ */
+export interface Store {
+  /** Where this store is rooted, from the OPFS root. Empty for the root itself. */
+  readonly mount: Path;
+  walk(path?: Path): Promise<WalkEntry[]>;
+  readFile(path: Path): Promise<string | null>;
+  readBytes(path: Path): Promise<Bytes | null>;
+  writeFile(path: Path, content: string | Bytes): Promise<WriteResult>;
+  createFile(parent: Path, desired: string): Promise<string>;
+  createDirectory(parent: Path, desired: string): Promise<string>;
+  removeEntry(path: Path): Promise<void>;
+  renameEntry(path: Path, newName: string): Promise<void>;
+  moveEntry(path: Path, newParent: Path): Promise<void>;
+}
+
+export function storeAt(mount: Path): Store {
+  const at = (path: Path) => [...mount, ...path];
+  return {
+    mount,
+    walk: (path = []) => walk(at(path)),
+    readFile: path => readFile(at(path)),
+    readBytes: path => readBytes(at(path)),
+    writeFile: (path, content) => writeFile(at(path), content),
+    createFile: (parent, desired) => createFile(at(parent), desired),
+    createDirectory: (parent, desired) => createDirectory(at(parent), desired),
+    removeEntry: path => removeEntry(at(path)),
+    renameEntry: (path, newName) => renameEntry(at(path), newName),
+    moveEntry: (path, newParent) => moveEntry(at(path), at(newParent)),
+  };
+}
+
+/**
+ * The whole of OPFS. Only drive bookkeeping uses this — creating a mount,
+ * deleting a drive's folder, finding what predates the drives directory.
+ * Everything else works through a drive's own store.
+ */
+export const rootStore: Store = storeAt([]);
+
+/**
+ * Creates a directory at exactly this path, or does nothing if it's there.
+ *
+ * `createDirectory` can't serve: it uniquifies, which is right for a folder
+ * the user asked for and wrong for a mount — a second visit would land in
+ * `notes 2` and find it empty.
+ */
+export async function ensureDirectory(path: Path): Promise<void> {
+  await dirAt(path, true);
+}
+
+/**
+ * The names directly inside a directory, without descending into it.
+ *
+ * `walk` reads the whole subtree, which is the right shape for building a
+ * tree and the wrong one for answering "is there anything in here" — the
+ * question drive bookkeeping asks about the OPFS root.
+ */
+export async function listNames(path: Path): Promise<string[]> {
+  let dir: FileSystemDirectoryHandle;
+  try {
+    dir = await dirAt(path);
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for await (const [name] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) names.push(name);
+  return names;
 }
 
 // --- cross-tab notification --------------------------------------------------
 
-export type ChangeMessage = { kind: "tree" } | { kind: "file"; path: string[] };
+/**
+ * What one tab tells the others.
+ *
+ * Every message names the drive it is about, because two tabs can be looking
+ * at two different drives: without it, a write in one would make the other
+ * re-read a path that means something else entirely in the tree it is
+ * showing. `drives` is the registry itself changing — a drive added or
+ * removed — which is the one message that isn't about a drive's contents.
+ */
+export type ChangeMessage =
+  | { kind: "tree"; drive: string }
+  | { kind: "file"; drive: string; path: string[] }
+  | { kind: "drives" };
 
 const tabId = Math.random().toString(36).slice(2);
 let channel: BroadcastChannel | null | undefined;

@@ -13,7 +13,7 @@
  * in the dialect a vault is actually written in.
  */
 import type { Browser } from "playwright";
-import { Checks, asText, openApp, openFile, opfsFiles, waitUntil } from "./harness";
+import { Checks, asText, openApp, openFile, opfsFiles, waitUntil, writeOpfsBytes, writeOpfsFile } from "./harness";
 
 const NOTE = [
   "#classnotes ",
@@ -52,22 +52,8 @@ export default async function run(browser: Browser): Promise<number> {
   const page = await openApp(context);
   await page.waitForSelector(".milkdown-root, .editor", { timeout: 15_000 });
 
-  await page.evaluate(
-    async ({ path, text, image, png }) => {
-      const root = await navigator.storage.getDirectory();
-      const write = async (at: string, bytes: Uint8Array<ArrayBuffer>) => {
-        const segments = at.split("/");
-        let dir = root;
-        for (const s of segments.slice(0, -1)) dir = await dir.getDirectoryHandle(s, { create: true });
-        const writable = await (await dir.getFileHandle(segments.at(-1)!, { create: true })).createWritable();
-        await writable.write(bytes);
-        await writable.close();
-      };
-      await write(path, new TextEncoder().encode(text));
-      await write(image, Uint8Array.from(atob(png), c => c.charCodeAt(0)));
-    },
-    { path: PATH, text: NOTE, image: IMAGE, png: PNG_BASE64 },
-  );
+  await writeOpfsFile(page, PATH, NOTE);
+  await writeOpfsBytes(page, IMAGE, PNG_BASE64);
 
   await page.reload();
   await page.waitForSelector(".tree-row", { timeout: 15_000 });
