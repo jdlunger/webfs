@@ -440,12 +440,14 @@ problem.
   remark-stringify refuses to serialize a node type it has never heard of.
   `$remark` and `$node` come from `@milkdown/kit/utils`; Crepe's own Latex
   feature is the worked example to copy if this needs extending.
-- **Only images are claimed.** Obsidian embeds notes and PDFs with the same
-  syntax; turning one into an `<img>` would show a broken image where a legible
-  name used to be. Those (and bare `[[links]]`, which webfs doesn't handle at
-  all) are still escaped on save — the corruption above, unfixed for everything
-  that isn't an image. Worth knowing before pointing webfs at a vault that
-  uses them.
+- **Only images are drawn; everything else in double brackets is still a
+  node.** Obsidian embeds notes and PDFs with the same syntax and links to
+  notes with the same brackets minus the `!`; turning one of those into an
+  `<img>` would show a broken image where a legible name used to be. They
+  become a `wikiLink` instead, which renders as the text it already reads as
+  and is written back character for character. Rendering it as its own source
+  is the honest minimum until webfs can follow one — the reason it's a node at
+  all is that a node is what the serializer leaves alone.
 - **`toDOM` is synchronous and the bytes aren't**, so the node renders a span
   with an empty `<img>` and fills in `src` when the read lands. A link that
   resolves to nothing shows its own source (`![[missing.png]]`) rather than
@@ -475,6 +477,71 @@ the link actually points, then `Media/<name>`.
   to keep in step with the attachment folder in `.obsidian/app.json`, which
   webfs doesn't read.
 
+## Nothing is rewritten except where the user typed
+
+`preserve.ts` (pure, `preserve.test.ts`), the `markdownUpdated` handler in
+`Editor.tsx`, and `bun run browser vault`.
+
+Milkdown is a WYSIWYG editor: the markdown it saves is re-serialized from the
+document, never patched. So every convention the serializer has an opinion
+about is rewritten at once — tabs become spaces, `-` bullets become `*`,
+`#classnotes` becomes `\#classnotes`, trailing spaces vanish, blank lines
+appear between blocks. Measured against a real Obsidian vault, **one keystroke
+rewrote 190 lines of a 179-line note**, and a sync then carried the whole file
+to GitHub as the user's change. Tuning the serializer can't reach this: it is
+a dozen separate conventions, and the next one is always a version away.
+
+- **Opening a note used to rewrite it, with nobody typing at all.** Crepe puts
+  an empty paragraph at the end of the document when it mounts, so a document
+  change lands moments after a file is opened, `markdownUpdated` fires, and the
+  normalized text is saved. That is the worst form of this bug and the easiest
+  to miss, because nothing on screen suggests the file was touched. An empty
+  paragraph isn't content, so `sameText` compares with trailing blank lines
+  ignored, and a handler that finds nothing else different returns without
+  calling `onChange` at all.
+- **The editor's output is read as a statement about what changed**, not as the
+  file. Three texts: `stored` (the bytes on disk, in whatever dialect),
+  `baseline` (what the serializer made of them) and `current` (what it makes of
+  them now). `baseline` and `current` are both the serializer's own output, so
+  the diff between them is the user's edit and nothing else; lines that diff
+  calls untouched are written back from `stored` byte for byte. A file
+  converges on CommonMark line by line as it's edited, and a note that's only
+  read is never written.
+- **`baseline` is worked out on the first update, not at mount** —
+  `roundTrip(stored)` rather than `getMarkdown()` once the editor is ready.
+  Crepe's own change can land before or after a promise resolves, and a
+  baseline captured on the wrong side of it reads that change as the user's.
+  Deriving it from `stored` has no timing to get wrong.
+- **`alignKey` is what lets `baseline` and `stored` be matched at all.** They
+  say the same thing in different dialects, so exact line equality matches
+  almost nothing; dropping indentation, the bullet character and the
+  backslashes lines `\t- Kraft` up with `  * Kraft`. It counts blockquote
+  markers rather than dropping them (a line in a callout isn't the same line
+  as one outside it) but normalises what follows — without that, a note ending
+  in an Obsidian `> [!todo]` had its whole checklist misaligned and the entire
+  note was rewritten by an edit anywhere in it.
+- **Two reconstructions are offered, best first.** They differ over lines the
+  serializer added that the original never had. Dropping them is what hands
+  the file back exactly; keeping the ones that border on new text is what stops
+  a paragraph typed after a callout from being swallowed into the quote. Which
+  is right depends on the note, so both are returned and the caller finds out.
+- **The caller checks before it writes**, and that is what makes the whole
+  thing safe: a candidate is only saved if re-parsing and re-serializing it
+  gives `current` back. A reconstruction that says anything else is discarded,
+  the list ends with `current` itself, and so this can cost the preservation
+  but never the edit. Anything `preserve.ts` gets wrong degrades to the old
+  behavior rather than to lost text.
+- **What the serializer writes still matters, but only for edited lines.**
+  `remarkStringifyOptionsCtx` sets `bullet: "-"` and wraps the `text` handler
+  in `unescapeTags`, so a line the user does touch comes out looking like the
+  rest of the vault rather than announcing itself. `unescapeTags` only undoes a
+  `#` with an ordinary character hard against it: `\# Title` is a real heading
+  and stays escaped, and so does a heading's closing `#`.
+- **This is line-based, and deliberately so.** Editing one word rewrites that
+  whole line in the serializer's dialect — the user edited that line. Anything
+  finer would need source positions that don't survive the document being
+  edited.
+
 ## Browser suites (`bun run browser`)
 
 `browser/` drives the real app in Chromium, because the half of webfs that
@@ -484,7 +551,7 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`, `vault`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
@@ -499,6 +566,10 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   `contextmenu`: what's being tested is the browser's own handling of a finger
   held still, including the click it sends afterwards. `page.dispatchEvent`
   can't express that, and a suite that fakes it would pass over a broken one.
+- **Assert that nothing happened, as well as that something did.** The
+  `vault` suite opens a note, waits out both debounces and checks the file is
+  byte-identical. Every rewrite bug here was invisible on screen, so the only
+  way to catch one is to read the bytes back.
 - **Poll outcomes, never the status line.** It shows what the *last* sync
   did, so asserting on it right after clicking Sync reads the previous run
   and passes for the wrong reason — which it did, hiding a real failure.

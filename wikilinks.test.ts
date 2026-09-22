@@ -7,11 +7,14 @@
 import { test, expect } from "bun:test";
 import {
   WIKI_IMAGE,
+  WIKI_LINK,
   expandWikiImages,
   splitWikiImages,
   wikiImageLayout,
   wikiImageMarkdown,
   wikiImageTarget,
+  wikiLinkMarkdown,
+  unescapeTags,
   type MarkdownNode,
 } from "./src/wikilinks";
 
@@ -33,17 +36,25 @@ test("several embeds in one line are each their own", () => {
   ]);
 });
 
-test("text with no embed comes back as itself, in one piece", () => {
+test("text with no brackets comes back as itself, in one piece", () => {
   expect(splitWikiImages("just words")).toEqual([{ type: "text", value: "just words" }]);
-  // A link, not an embed: no leading "!".
-  expect(splitWikiImages("[[Some Note]]")).toEqual([{ type: "text", value: "[[Some Note]]" }]);
+  expect(splitWikiImages("a [single] bracket")).toEqual([{ type: "text", value: "a [single] bracket" }]);
 });
 
-test("only images are claimed, so a note embed stays legible", () => {
-  // Rendering these as <img> would show a broken image where the name was.
-  expect(splitWikiImages("![[Some Note]]")).toEqual([{ type: "text", value: "![[Some Note]]" }]);
-  expect(splitWikiImages("![[paper.pdf]]")).toEqual([{ type: "text", value: "![[paper.pdf]]" }]);
-  expect(splitWikiImages("![[]]")).toEqual([{ type: "text", value: "![[]]" }]);
+test("anything in double brackets that isn't an image becomes a link", () => {
+  // Rendering these as <img> would show a broken image where the name was, and
+  // leaving them as text would get them escaped on the next save.
+  expect(splitWikiImages("[[Some Note]]")).toEqual([{ type: WIKI_LINK, source: "[[Some Note]]" }]);
+  expect(splitWikiImages("![[Some Note]]")).toEqual([{ type: WIKI_LINK, source: "![[Some Note]]" }]);
+  expect(splitWikiImages("![[paper.pdf]]")).toEqual([{ type: WIKI_LINK, source: "![[paper.pdf]]" }]);
+  expect(splitWikiImages("[[Note#Heading|alias]]")).toEqual([{ type: WIKI_LINK, source: "[[Note#Heading|alias]]" }]);
+  expect(splitWikiImages("![[]]")).toEqual([{ type: WIKI_LINK, source: "![[]]" }]);
+});
+
+test("a link is written back as the characters it was written as", () => {
+  for (const source of ["[[Some Note]]", "![[paper.pdf]]", "[[Note#Heading|alias]]"]) {
+    expect(wikiLinkMarkdown(source)).toBe(source);
+  }
 });
 
 test("the target is the part before the first pipe", () => {
@@ -99,4 +110,17 @@ test("the tree walk reaches embeds nested in lists, and leaves code alone", () =
   ]);
   expect(tree.children?.[1]).toEqual({ type: "inlineCode", value: "![[shot.png]]" });
   expect(tree.children?.[2]).toEqual({ type: "code", lang: "js", value: "const x = \"![[shot.png]]\";" });
+});
+
+test("a tag the serializer escaped is a tag again", () => {
+  expect(unescapeTags("\\#classnotes")).toBe("#classnotes");
+  expect(unescapeTags("\\#homework and \\#lookup")).toBe("#homework and #lookup");
+  expect(unescapeTags("\\#Berufsaufgabe")).toBe("#Berufsaufgabe");
+});
+
+test("a escaped heading stays escaped, since that one really would be one", () => {
+  expect(unescapeTags("\\# Title")).toBe("\\# Title");
+  // The closing sequence of an ATX heading, escaped because it ends the line.
+  expect(unescapeTags("Title \\#")).toBe("Title \\#");
+  expect(unescapeTags("\\#\\#\\# not a heading")).toBe("\\#\\#\\# not a heading");
 });
