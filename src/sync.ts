@@ -5,7 +5,7 @@
  * with the other tab replaced by a git branch:
  *
  *   base   what this browser last saw *and* last pushed — a path → blob-sha
- *          snapshot, kept in localStorage (syncConfig.ts)
+ *          snapshot, kept in localStorage (driveConfig.ts)
  *   local  what's in OPFS right now
  *   remote what's on the branch right now
  *
