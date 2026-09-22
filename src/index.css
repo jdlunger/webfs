@@ -40,13 +40,45 @@ body {
 }
 
 .sidebar {
-  width: 260px;
+  /* Set inline by Sidebar.tsx, restored from localStorage. The fallback is
+     the same default sidebarWidth.ts uses, for the render before it lands. */
+  width: var(--sidebar-width, 260px);
   flex-shrink: 0;
   background: #181818;
   border-right: 1px solid #2c2c2c;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+}
+
+/* The drag handle sits *inside* the sidebar — it overlaps the border rather
+   than hanging past it, because .sidebar clips its overflow. Wider than the
+   1px it appears to be, since a 1px hit target is a cursor game. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 10;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+body.resizing-sidebar .sidebar-resizer {
+  background: #4a90e2;
+  outline: none;
+}
+
+/* For the length of a drag the pointer is out over the editor, which is
+   contenteditable and would otherwise select text under the cursor. */
+body.resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .sidebar-header {
@@ -412,6 +444,8 @@ body {
     top: 0;
     left: 0;
     bottom: 0;
+    /* Deliberately not --sidebar-width: the drawer is sized to the phone,
+       and there's no handle here to have chosen anything else. */
     width: min(82vw, 300px);
     z-index: 40;
     transform: translateX(-100%);

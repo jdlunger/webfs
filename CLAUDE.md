@@ -218,6 +218,41 @@ with what comes back.
   store (sessionStorage) would forget everything the moment the browser
   closed, which is the case this exists for.
 
+## The sidebar's width
+
+`sidebarWidth.ts` (the number and where it's kept), `SidebarResizer` in
+`Sidebar.tsx` (the drag), `.sidebar-resizer` in `index.css`. Covered by
+`sidebarWidth.test.ts` and the tail of `bun run browser panes`.
+
+- **The width lives in localStorage, not OPFS.** OPFS is the document store
+  and it's what sync pushes to GitHub; how wide a pane is on this screen is
+  not a document, and it's per-device by nature — the same notes on a laptop
+  and on a large monitor want different widths.
+- **It has its own key rather than a place in `workspace.ts`.** Everything in
+  a workspace entry is a path *within* one drive, which is why there is an
+  entry per drive; a width is about this screen and means the same whichever
+  drive is mounted, so storing it per drive would have it change when the
+  drive does.
+- **It's a custom property, not an inline `width`.** Below 768px the sidebar
+  is a fixed-width drawer sized by CSS, and an inline width would win over
+  that media block; `--sidebar-width` is simply not read there. The handle
+  isn't rendered at all on a narrow screen — a drag target down the drawer's
+  edge would fight the tree's own scrolling.
+- **The window is a second ceiling** (`MIN_CONTENT_WIDTH`), applied on load
+  and on every `resize`: a width chosen on a wide monitor would otherwise
+  leave no editor when the same store is opened on a laptop. Only a
+  deliberate drag is written back, though, so shrinking the window doesn't
+  overwrite the width the user picked — widen it again and a reload restores
+  it.
+- **The drag uses pointer capture**, so a fast drag that outruns the cursor
+  still reports to the handle and a pointer lost to the OS ends the drag by
+  itself. `body.resizing-sidebar` suppresses selection for the duration,
+  because the pointer spends the drag out over a contenteditable.
+- **The handle takes focus and answers the arrow keys.** The point of
+  persisting a width is that someone cares about it, and this is the one
+  control here a keyboard otherwise couldn't reach. Double-click resets it.
+
+
 ## Mobile (iOS Safari) considerations
 
 The sidebar becomes a slide-in drawer below 768px (see `.sidebar-open` /

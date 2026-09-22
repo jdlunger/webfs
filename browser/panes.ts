@@ -147,6 +147,37 @@ export default async function run(browser: Browser): Promise<number> {
   );
   checks.ok("the deleted file's tab closes with it", tabClosed, (await tabIds(page)).join(","));
 
+  // --- the sidebar's width ---------------------------------------------------
+
+  // A drag is the one thing here that only a browser can answer: the width
+  // is laid out by CSS from a custom property, so what matters is the pixels
+  // the element ends up with, and whether they survive a reload.
+  const sidebarWidth = () => page.locator(".sidebar").evaluate(el => el.getBoundingClientRect().width);
+  const handle = page.locator(".sidebar-resizer");
+  const grip = (await handle.boundingBox())!;
+  const y = Math.round(grip.y + grip.height / 2);
+
+  const before = await sidebarWidth();
+  await page.mouse.move(Math.round(grip.x + grip.width / 2), y);
+  await page.mouse.down();
+  await page.mouse.move(Math.round(grip.x + grip.width / 2) + 120, y, { steps: 8 });
+  await page.mouse.up();
+  const dragged = await sidebarWidth();
+  checks.ok("dragging the handle resizes the sidebar", Math.abs(dragged - (before + 120)) <= 2, `${before} → ${dragged}`);
+
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  checks.ok("the width is still there after a reload", Math.abs((await sidebarWidth()) - dragged) <= 1, String(await sidebarWidth()));
+
+  // Dragged past its ceiling it stops rather than eating the editor.
+  const far = (await handle.boundingBox())!;
+  await page.mouse.move(Math.round(far.x + far.width / 2), y);
+  await page.mouse.down();
+  await page.mouse.move(1200, y, { steps: 8 });
+  await page.mouse.up();
+  checks.ok("it stops at a width that still leaves an editor", (await sidebarWidth()) <= 600, String(await sidebarWidth()));
+  checks.ok("the editor is still on screen beside it", (await page.locator(".pane").first().boundingBox())!.width > 300);
+
   await context.close();
   await checkTouch(browser, checks);
   await checkRestore(browser, checks);
@@ -168,6 +199,9 @@ async function checkTouch(browser: Browser, checks: Checks): Promise<void> {
   await page.waitForTimeout(400);
 
   checks.ok("a narrow screen shows no tab strip", (await page.locator(".tab-strip:visible").count()) === 0);
+  // The drawer is sized to the phone, and a drag target down its edge would
+  // fight the tree's own scrolling.
+  checks.ok("a narrow screen has no resize handle", (await page.locator(".sidebar-resizer").count()) === 0);
   const before = await page.locator(".mobile-topbar-title").innerText();
 
   const row = page.locator('.tree-row:has-text("ideas.md")').first();

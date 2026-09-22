@@ -1,6 +1,24 @@
-import { useCallback, useState, type DragEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import { type FileSystem, type FSNode, ROOT_ID, childrenOf } from "./fs";
 import { ContextMenu, useContextMenuTrigger, type MenuItem, type MenuPosition } from "./ContextMenu";
+import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
+import {
+  DEFAULT_SIDEBAR_WIDTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  clampSidebarWidth,
+  loadSidebarWidth,
+  saveSidebarWidth,
+} from "./sidebarWidth";
 
 interface SidebarProps {
   fs: FileSystem;
@@ -65,6 +83,97 @@ function listMoveTargets(fs: FileSystem, node: FSNode): MoveTarget[] {
   return targets;
 }
 
+/** How far one arrow key nudges the edge. */
+const KEYBOARD_STEP = 16;
+
+/**
+ * The sidebar's width, restored from localStorage and re-clamped against the
+ * window: a width saved on a wide monitor would otherwise leave no editor
+ * when the same store is opened on a laptop. Only a deliberate drag is
+ * written back, so shrinking the window doesn't overwrite the width the user
+ * chose — widen it again and a reload brings that width back.
+ */
+function useSidebarWidth(wide: boolean) {
+  const [width, setWidth] = useState(() => loadSidebarWidth(window.innerWidth));
+
+  useEffect(() => {
+    if (!wide) return;
+    const onResize = () => setWidth(current => clampSidebarWidth(current, window.innerWidth));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [wide]);
+
+  return [width, setWidth] as const;
+}
+
+interface ResizerProps {
+  width: number;
+  onWidth: (width: number) => void;
+}
+
+/**
+ * The drag handle on the sidebar's right edge. Pointer events with capture
+ * rather than window listeners, so a fast drag that outruns the cursor still
+ * reports to the handle, and so a pointer lost to the OS (an alt-tab, a
+ * cancelled touch) ends the drag by itself.
+ *
+ * It's a `separator` and it takes focus: the whole point of persisting a
+ * width is that someone cares about it, and a drag handle is the one control
+ * here that a keyboard otherwise couldn't reach at all.
+ */
+function SidebarResizer({ width, onWidth }: ResizerProps) {
+  const start = useRef<{ x: number; width: number } | null>(null);
+
+  const stop = () => {
+    if (!start.current) return;
+    start.current = null;
+    // Selection is suppressed for the duration rather than only on the
+    // handle: the pointer spends the drag over the editor, which is
+    // contenteditable and would happily select text under it.
+    document.body.classList.remove("resizing-sidebar");
+    saveSidebarWidth(width);
+  };
+
+  const commit = (next: number) => {
+    onWidth(next);
+    saveSidebarWidth(next);
+  };
+
+  return (
+    <div
+      className="sidebar-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      aria-valuenow={width}
+      aria-valuemin={MIN_SIDEBAR_WIDTH}
+      aria-valuemax={MAX_SIDEBAR_WIDTH}
+      tabIndex={0}
+      title="Drag to resize · double-click to reset"
+      onPointerDown={(e: PointerEvent<HTMLDivElement>) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start.current = { x: e.clientX, width };
+        document.body.classList.add("resizing-sidebar");
+      }}
+      onPointerMove={(e: PointerEvent<HTMLDivElement>) => {
+        if (!start.current) return;
+        onWidth(clampSidebarWidth(start.current.width + e.clientX - start.current.x, window.innerWidth));
+      }}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onDoubleClick={() => commit(clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH, window.innerWidth))}
+      onKeyDown={e => {
+        const step = e.key === "ArrowLeft" ? -KEYBOARD_STEP : e.key === "ArrowRight" ? KEYBOARD_STEP : 0;
+        if (!step) return;
+        e.preventDefault();
+        commit(clampSidebarWidth(width + step, window.innerWidth));
+      }}
+    />
+  );
+}
+
 /** An open menu: `node` is null for the one the empty tree area opens. */
 interface OpenMenu {
   node: FSNode | null;
@@ -72,6 +181,8 @@ interface OpenMenu {
 }
 
 export function Sidebar(props: SidebarProps) {
+  const wide = useMediaQuery(WIDE_SCREEN);
+  const [width, setWidth] = useSidebarWidth(wide);
   const [rootDragOver, setRootDragOver] = useState(false);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   // Held here rather than in the row, so the menu can start a rename and so
@@ -115,7 +226,10 @@ export function Sidebar(props: SidebarProps) {
   };
 
   return (
-    <div className="sidebar">
+    // The width is a custom property rather than an inline `width`, because
+    // the drawer the sidebar becomes below 768px is sized by CSS and an
+    // inline width would win over it. There, the var is simply not read.
+    <div className="sidebar" style={{ "--sidebar-width": `${width}px` } as CSSProperties}>
       <div className="sidebar-header">
         <span>Files</span>
         <div className="sidebar-header-actions">
@@ -163,6 +277,9 @@ export function Sidebar(props: SidebarProps) {
         ))}
       </div>
       {props.footer}
+      {/* No handle on a phone: the sidebar is a fixed-width drawer there, and
+          a drag target down its edge would fight the tree's own scrolling. */}
+      {wide ? <SidebarResizer width={width} onWidth={setWidth} /> : null}
       {menu ? <ContextMenu position={menu.position} items={menuItems(menu.node)} onClose={closeMenu} /> : null}
     </div>
   );
