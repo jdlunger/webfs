@@ -24,6 +24,24 @@ intended workflow here, not an oversight — the point is to be able to pull
 up the GitHub Pages URL right after a change and see it live, without a PR
 merge step in between.
 
+**Several agents work on this repo at once, so `main` moves underneath you.**
+Before pushing, `git fetch origin main` and look at where it is. If it has
+moved, rebase your work onto it and run the checks again before pushing.
+
+- **Never force-push.** A rejected push means someone else's commits are on
+  `main`; forcing over them throws that work away. The rejection is the safety
+  net doing its job, not an obstacle — `main` here is shared, and rewriting its
+  history is not the "follow the repo's convention" that applies to a branch
+  you made yourself.
+- **Re-run the checks after rebasing, rather than trusting the run from
+  before.** What landed while you were working can touch the same surface: the
+  plain-text view added a button to the tab strip in the middle of a fix to the
+  `panes` suite, and that fix's assertions read the tab strip. Rebasing is
+  clean when the diffs don't overlap and still changes what your tests see.
+- Worth a `git fetch` before starting something long, too, not only before
+  pushing — it's cheaper to begin from the current `main` than to reconcile
+  with it an hour later.
+
 ## Editor (Milkdown / Crepe)
 
 `Editor.tsx` mounts a `@milkdown/crepe` `Crepe` instance per file (remounted
