@@ -364,8 +364,14 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   with the full path in the `title` — the opposite of `commitTitle`, for the
   opposite reason. The hook throttles these to `PROGRESS_MS` (120ms) per
   stage, since hashing fires one per file and a render apiece would cost more
-  than the sync. Blob uploads are counted by `github.ts` as they land, not
-  which file — they go up in parallel and finish out of order. The bar itself
+  than the sync. Blob uploads are counted by `github.ts` as they
+  land, each named with the path that just *finished* — several are in flight
+  at once, so "currently uploading" is a fiction. They go up
+  `UPLOAD_CONCURRENCY` (4) at a time rather than all at once, which is both
+  what GitHub asks for on writes (a burst comes back as a 403 secondary rate
+  limit, which this client would report as a permissions problem) and what
+  makes the count mean anything — fired together they all land in the same
+  instant, and the line went from "12 files" straight to "Committing". The bar itself
   is absolutely positioned over the strip's top border (`.sync-progress`), so
   the sidebar's footer doesn't change height every time a sync starts.
 - **Timing:** on load, 4s after edits settle, every 60s, on tab-visible and on

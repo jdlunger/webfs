@@ -19,6 +19,18 @@ const API = "https://api.github.com";
 /** Regular file. The only mode this app ever creates. */
 export const FILE_MODE = "100644";
 
+/**
+ * How many blobs a push uploads at once.
+ *
+ * Not all of them: GitHub asks that write requests for one user not be made
+ * concurrently, and answers a burst with a 403 secondary rate limit rather
+ * than a 429 — which this client would report as a permissions problem. A
+ * small pool is also what makes the upload count mean anything, since a
+ * hundred requests fired together all land in the same instant and progress
+ * goes from nothing to done with no middle.
+ */
+const UPLOAD_CONCURRENCY = 4;
+
 export interface RepoRef {
   owner: string;
   repo: string;
@@ -61,10 +73,13 @@ export type CommitEntry =
   | { path: string; mode: string; content: string | Bytes };
 
 /**
- * Called as each new blob lands, with how many of them there are. Entries that
- * name a blob the branch already has are never uploaded, so they don't count.
+ * Called as each new blob lands, with its path and how many there are in all.
+ * Entries naming a blob the branch already has are never uploaded, so they
+ * don't count. The path is the one that *finished*, not one "in progress":
+ * blobs go up in parallel, so at any moment several are in flight and naming
+ * a single current file would be a fiction.
  */
-export type UploadProgress = (done: number, total: number) => void;
+export type UploadProgress = (done: number, total: number, path: string) => void;
 
 export interface Remote {
   readTree(): Promise<RemoteTree>;
@@ -301,25 +316,29 @@ export class GitHubRemote implements Remote {
     }
 
     // The uploads are what a push actually spends its time on, so they're
-    // counted as they land. They go up in parallel and finish out of order,
-    // which is why the count is all that's reported and not which file it was.
-    const uploads = entries.filter(entry => !("sha" in entry)).length;
+    // counted as they land, each with the path that just finished — "in
+    // progress" is several files at once, and naming one of them would be a
+    // fiction.
+    const tree = entries.map(entry => ({
+      path: entry.path,
+      mode: entry.mode,
+      type: "blob" as const,
+      sha: "sha" in entry ? entry.sha : "",
+    }));
+    const pending = entries.flatMap((entry, index) => ("sha" in entry ? [] : [index]));
+    let started = 0;
     let uploaded = 0;
-    const blobSha = async (entry: CommitEntry): Promise<string> => {
-      if ("sha" in entry) return entry.sha;
-      const sha = await this.createBlob(entry.content);
-      onUpload?.(++uploaded, uploads);
-      return sha;
+    const worker = async (): Promise<void> => {
+      // Single-threaded between awaits, so the index handed out here is this
+      // worker's alone.
+      while (started < pending.length) {
+        const index = pending[started++]!;
+        const entry = entries[index]! as { path: string; content: string | Bytes };
+        tree[index]!.sha = await this.createBlob(entry.content);
+        onUpload?.(++uploaded, pending.length, entry.path);
+      }
     };
-
-    const tree = await Promise.all(
-      entries.map(async entry => ({
-        path: entry.path,
-        mode: entry.mode,
-        type: "blob" as const,
-        sha: await blobSha(entry),
-      })),
-    );
+    await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, pending.length) }, worker));
 
     // No base_tree: `tree` is the complete desired state, so deletions need no
     // separate expression.

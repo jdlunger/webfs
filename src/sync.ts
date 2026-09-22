@@ -109,7 +109,9 @@ export interface SyncSummary {
  * A pass is the fixed sequence of stages below. Within one, `done`/`total`
  * count the files it works through (`0`/`0` when there is nothing countable)
  * and `path` names the one it is on. A stage reports when a step *starts*, so
- * `path` is what is happening now and `done` is what is already behind it.
+ * `path` is what is happening now and `done` is what is already behind it —
+ * except "uploading", which can't: its blobs go up in parallel, so it reports
+ * each one as it lands and `done` includes the file named.
  */
 export type SyncStage =
   | "reading"
@@ -201,8 +203,11 @@ export function describeProgress({ stage, path, done, total }: SyncProgress): st
       return `Keeping both copies of ${name}${of}`;
     case "deleting":
       return `Deleting ${name}${of}`;
+    // The only stage that counts what it has *finished* rather than what it is
+    // starting, since that's all a parallel upload can honestly report.
     case "uploading":
-      return total > 1 ? `Uploading ${done}/${total} files` : "Uploading 1 file";
+      if (path === undefined) return total > 1 ? `Uploading ${total} files` : "Uploading 1 file";
+      return total > 1 ? `Uploading ${done}/${total} files (${name})` : `Uploading ${name}`;
     case "committing":
       return "Committing…";
   }
@@ -450,8 +455,8 @@ export async function syncOnce(
   // photo in it, it's where the seconds go.
   const uploads = entries.filter(entry => "content" in entry).length;
   onProgress(uploads === 0 ? { stage: "committing", done: 0, total: 0 } : { stage: "uploading", done: 0, total: uploads });
-  await remote.commit(entries, commitTitle(changed), tree.commitSha, (done, total) =>
-    onProgress(done === total ? { stage: "committing", done: 0, total: 0 } : { stage: "uploading", done, total }),
+  await remote.commit(entries, commitTitle(changed), tree.commitSha, (done, total, path) =>
+    onProgress(done === total ? { stage: "committing", done: 0, total: 0 } : { stage: "uploading", path, done, total }),
   );
   return { state: { files: finalSha }, summary, written, removed };
 }

@@ -190,7 +190,7 @@ class FakeRemote implements Remote {
       else files[entry.path] = text;
       snapshot[entry.path] = bytes;
       this.blobs.set(await gitBlobSha(bytes), bytes);
-      if (!("sha" in entry)) onUpload?.(++uploaded, uploads);
+      if (!("sha" in entry)) onUpload?.(++uploaded, uploads, entry.path);
     }
     this.files = files;
     this.rawFiles = raw;
@@ -530,6 +530,23 @@ test("uploads are counted as they land, and only new blobs count", async () => {
   expect(events.at(-1)).toEqual({ stage: "committing", done: 0, total: 0 });
 });
 
+test("each upload names the file that landed", async () => {
+  const local = fakeLocal({ "a.md": "one", "b.md": "two", "c.md": "three" });
+  const remote = new FakeRemote({});
+
+  const events: SyncProgress[] = [];
+  await syncOnce(local, remote, EMPTY, event => events.push(event));
+
+  // The first is the count alone — nothing has landed yet to name. After that
+  // there is one per file, and the last (3/3) gives way to "committing".
+  expect(events.filter(event => event.stage === "uploading")).toEqual([
+    { stage: "uploading", done: 0, total: 3 },
+    { stage: "uploading", path: "a.md", done: 1, total: 3 },
+    { stage: "uploading", path: "b.md", done: 2, total: 3 },
+  ]);
+  expect(events.at(-1)).toEqual({ stage: "committing", done: 0, total: 0 });
+});
+
 test("a pass with nothing to do stops before the push", async () => {
   const local = fakeLocal({ "a.md": "text" });
   const remote = new FakeRemote({ "a.md": "text" });
@@ -554,6 +571,11 @@ test("the status line names the file, not the path it lives at", () => {
   expect(describeProgress({ stage: "downloading", path: "Notes/trips/todo.md", done: 1, total: 3 })).toBe("Downloading todo.md (2/3)");
   expect(describeProgress({ stage: "downloading", path: "todo.md", done: 0, total: 1 })).toBe("Downloading todo.md");
   expect(describeProgress({ stage: "hashing", path: "a.md", done: 2, total: 9 })).toBe("Checking local files (2/9)");
-  expect(describeProgress({ stage: "uploading", done: 1, total: 4 })).toBe("Uploading 1/4 files");
+  expect(describeProgress({ stage: "uploading", path: "Notes/photo.png", done: 1, total: 4 })).toBe(
+    "Uploading 1/4 files (photo.png)",
+  );
+  expect(describeProgress({ stage: "uploading", path: "Notes/photo.png", done: 1, total: 1 })).toBe("Uploading photo.png");
+  // Before anything has landed there is no file to name, only how many.
+  expect(describeProgress({ stage: "uploading", done: 0, total: 4 })).toBe("Uploading 4 files");
   expect(describeProgress({ stage: "committing", done: 0, total: 0 })).toBe("Committing…");
 });
