@@ -300,6 +300,27 @@ body {
   height: 100%;
 }
 
+/* The markdown behind the rendered document, shown by the tab strip's toggle.
+   Monospace and flush left rather than in a centered prose column: this is the
+   source, and lining wrapped list markers up matters more here than measure. */
+.text-editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 24px 28px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: #ddd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* Crepe's 60px/120px content padding and its heading scale assume the editor
    has the whole window. Split in two, each column is about half as wide, and
    120px a side leaves a strip barely wider than the margins — "Welcome to your
@@ -333,7 +354,8 @@ body {
     z-index: 20;
   }
 
-  .mobile-menu-button {
+  .mobile-menu-button,
+  .mobile-view-button {
     background: #2a2a2a;
     color: #eee;
     border: none;
@@ -343,6 +365,12 @@ body {
     font-size: 20px;
     line-height: 1;
     flex-shrink: 0;
+  }
+
+  /* "</>" is three glyphs where "☰" is one, and 20px of it overflows a 44px
+     square target that has to stay 44px to be tappable. */
+  .mobile-view-button {
+    font-size: 14px;
   }
 
   .mobile-topbar-title {
@@ -428,6 +456,13 @@ body {
      the screen. */
   .editor .milkdown-root .ProseMirror {
     padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  /* 16px, like .rename-input: anything smaller makes iOS Safari zoom the page
+     in when the field takes focus, and it doesn't zoom back out. */
+  .editor .text-editor {
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    font-size: 16px;
   }
 
   /* Crepe's default heading sizes (up to 2.625em) are tuned for wide desktop

@@ -45,6 +45,17 @@ export function idOf(segments: readonly string[]): string {
   return segments.join("/");
 }
 
+/**
+ * The same id after `from` has been renamed or moved to `to`.
+ *
+ * An id *is* a path, so a folder moving takes everything under it along:
+ * prefix in, prefix out. Ids outside that subtree come back untouched.
+ */
+export function remapId(id: string, from: string, to: string): string {
+  if (id === from) return to;
+  return id.startsWith(`${from}/`) ? to + id.slice(from.length) : id;
+}
+
 /** The same path, encoded for the URL bar. */
 export function getNodePath(id: string): string {
   return "/" + segmentsOf(id).map(encodeURIComponent).join("/");

@@ -1,3 +1,4 @@
+import { ViewToggle, type EditorView } from "./Editor";
 import type { FileSystem } from "./fs";
 import type { Pane } from "./panes";
 
@@ -12,20 +13,25 @@ export function TabStrip({
   fs,
   focused,
   canSplit,
+  view,
   onSelect,
   onClose,
   onSplit,
   onClosePane,
+  onToggleView,
 }: {
   pane: Pane;
   fs: FileSystem;
   focused: boolean;
   /** False once a second pane exists, which turns the button into a ✕. */
   canSplit: boolean;
+  /** How this pane's file is shown; null when it holds nothing with text. */
+  view: EditorView | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onSplit: () => void;
   onClosePane: () => void;
+  onToggleView: () => void;
 }) {
   return (
     <div className={`tab-strip ${focused ? "tab-strip-focused" : ""}`}>
@@ -58,6 +64,9 @@ export function TabStrip({
           </div>
         ))}
       </div>
+      {/* Left of the pane controls: this one acts on the document, they act
+          on the pane, and the ✕ stays where the muscle memory expects it. */}
+      {view ? <ViewToggle view={view} className="tab-strip-button" onToggle={onToggleView} /> : null}
       {canSplit ? (
         <button className="tab-strip-button" title="Split editor" aria-label="Split editor" onClick={onSplit}>
           ▥

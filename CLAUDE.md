@@ -50,6 +50,35 @@ position and undo history, so never bump it for local typing.
   the OS for any editable region and can't be suppressed from the page; only
   the predictive-text suggestion strip responds to the attributes above.
 
+## The plain-text view
+
+The toggle at the top right of a pane (`ViewToggle` in `Editor.tsx`, rendered
+by `TabStrip.tsx`, and by the mobile topbar in `App.tsx` where there is no tab
+strip) swaps Crepe for a textarea holding the file's markdown.
+
+- **The mode belongs to the file, not the pane or the app** (`textViews` in
+  `App.tsx`, keyed by id). The toggle then acts on the document you can
+  actually see, a split can hold one file rendered and another as source, and
+  closing a pane doesn't shuffle anyone's view. Being keyed by id, it has to
+  follow a rename the way tabs do — `remapTabs` remaps both, through
+  `remapId` in `fs.ts`, which `panes.ts` uses for the same rule.
+- **The textarea is controlled, where Crepe is uncontrolled.** So an edit
+  merged in from another tab or a sync simply lands in it, and `externalEdit`
+  has nothing to remount — that counter is for Crepe alone.
+- **Switching views is a swap of one editor for the other**, which is safe for
+  the same reason bumping `externalEdit` is: content has already flowed into
+  `fs` (both `markdownUpdated` and the textarea's `onChange` update it
+  synchronously), so whichever editor comes up starts from the current text.
+  There is no third copy of the document anywhere.
+- **It shows what a save would write, not the bytes the file arrived with.**
+  Once a document has been through Crepe, what's on disk is Crepe's
+  re-serialisation of it — so the source view is where that normalisation
+  becomes visible, rather than where it happens.
+- A binary file has no toggle: `viewOf` returns null for it, and the button
+  isn't rendered.
+- `bun run browser view` drives the round trip (source → Crepe → source) in a
+  real browser, which is the only place a lost paragraph would show up.
+
 ## Tabs, the split view, and the context menu
 
 `panes.ts` (pure layout arithmetic, `panes.test.ts`), `TabStrip.tsx`,
@@ -578,7 +607,7 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`, `vault`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`, `vault`, `view`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real

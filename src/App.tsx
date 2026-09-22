@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./index.css";
 import {
+  type FSNode,
   type FileSystem,
   canMove,
   findFirstFile,
@@ -8,11 +9,12 @@ import {
   getNodePath,
   idOf,
   markFileBinary,
+  remapId,
   segmentsOf,
   updateFileContent,
 } from "./fs";
 import { Sidebar } from "./Sidebar";
-import { Editor } from "./Editor";
+import { Editor, ViewToggle, type EditorView } from "./Editor";
 import { TabStrip } from "./TabStrip";
 import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
 import {
@@ -104,6 +106,14 @@ export function App() {
    * two different files, and a sync can land in either.
    */
   const [externalEdits, setExternalEdits] = useState<Record<string, number>>({});
+  /**
+   * Which files are being shown as markdown source rather than in Crepe.
+   *
+   * Keyed by file rather than by pane so the toggle acts on the document you
+   * can see: a split can show one file rendered and another as text, and
+   * closing a pane doesn't shuffle anyone's view out from under them.
+   */
+  const [textViews, setTextViews] = useState<Record<string, boolean>>({});
 
   // Tabs and the split view are a large-screen affordance; a phone keeps
   // showing one file at a time, as it always has.
@@ -177,9 +187,13 @@ export function App() {
     }
   }, [flushWrite]);
 
-  /** Follows every open tab when the node it points at is renamed or moved. */
+  /**
+   * Follows every open tab — and each file's chosen view — when the node it
+   * points at is renamed or moved. Both are keyed by id, and an id is a path.
+   */
   const remapTabs = useCallback((from: string, to: string) => {
     setLayout(prev => remapPaths(prev, from, to));
+    setTextViews(prev => Object.fromEntries(Object.entries(prev).map(([id, text]) => [remapId(id, from, to), text])));
   }, []);
 
   /** Runs a structural change, then re-reads the tree and tells other tabs. */
@@ -394,6 +408,13 @@ export function App() {
 
   const selectedFile = selectedId && fs?.[selectedId]?.type === "file" ? fs[selectedId] : null;
 
+  /** How a file is shown, and null for one that has no text form at all. */
+  const viewOf = (file: FSNode | null): EditorView | null =>
+    !file || file.binary ? null : textViews[file.id] ? "text" : "rich";
+
+  const toggleView = (id: string) => setTextViews(prev => ({ ...prev, [id]: !prev[id] }));
+  const selectedView = viewOf(selectedFile);
+
   const handleSelectFile = (id: string) => {
     // `replace` on a phone: there's no tab strip to steer there, so opening a
     // file swaps out the one before it rather than piling up invisibly.
@@ -489,6 +510,15 @@ export function App() {
           ☰
         </button>
         <span className="mobile-topbar-title">{selectedFile?.name ?? "webfs"}</span>
+        {/* Where the tab strip's copy would be, for a screen that has no tab
+            strip. There's one pane here, so it acts on the file on screen. */}
+        {selectedFile && selectedView ? (
+          <ViewToggle
+            view={selectedView}
+            className="mobile-view-button"
+            onToggle={() => toggleView(selectedFile.id)}
+          />
+        ) : null}
       </div>
       <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />
       <Sidebar
@@ -526,13 +556,16 @@ export function App() {
                 fs={fs}
                 focused={layout.focused === paneIndex}
                 canSplit={layout.panes.length < MAX_PANES}
+                view={viewOf(file)}
                 onSelect={id => setLayout(prev => openFile(prev, id))}
                 onClose={id => setLayout(prev => closeTab(prev, paneIndex, id))}
                 onSplit={() => setLayout(prev => splitPane(prev))}
                 onClosePane={() => setLayout(prev => closePane(prev, paneIndex))}
+                onToggleView={() => file && toggleView(file.id)}
               />
               <Editor
                 file={file}
+                view={viewOf(file) ?? "rich"}
                 externalEdit={file ? externalEdits[file.id] ?? 0 : 0}
                 onChange={handleContentChange}
                 onAssetAdded={handleAssetAdded}

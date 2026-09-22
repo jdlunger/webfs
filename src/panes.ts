@@ -25,6 +25,8 @@
  * drive a loop).
  */
 
+import { remapId } from "./fs";
+
 export interface Pane {
   /** Open files, in tab order. Ids are `fs.ts` ids, i.e. paths. */
   tabs: string[];
@@ -148,12 +150,9 @@ export function closePane(layout: PaneLayout, index: number): PaneLayout {
   };
 }
 
-/**
- * Follows open files through a rename or a move. An id *is* a path, so a
- * folder moving takes everything under it along: prefix in, prefix out.
- */
+/** Follows open files through a rename or a move (`remapId` in fs.ts). */
 export function remapPaths(layout: PaneLayout, from: string, to: string): PaneLayout {
-  const remap = (id: string) => (id === from ? to : id.startsWith(`${from}/`) ? to + id.slice(from.length) : id);
+  const remap = (id: string) => remapId(id, from, to);
   let changed = false;
   const panes = layout.panes.map(pane => {
     const tabs = pane.tabs.map(remap);

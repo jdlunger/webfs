@@ -35,8 +35,16 @@ import "@milkdown/crepe/theme/common/table.css";
 import "@milkdown/crepe/theme/frame-dark.css";
 import type { FSNode } from "./fs";
 
+/**
+ * How a file is being shown: the rendered document Crepe draws, or the
+ * markdown behind it. Per file rather than per pane or per app, so the
+ * toggle acts on what you're looking at — and a split can hold one of each.
+ */
+export type EditorView = "rich" | "text";
+
 interface EditorProps {
   file: FSNode | null;
+  view: EditorView;
   /** Counter bumped when another tab's edit has been merged into `file`. */
   externalEdit: number;
   /** Carries the id, because two panes can be editing two different files. */
@@ -383,6 +391,56 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
 const sameText = (a: string, b: string) => a.trimEnd() === b.trimEnd();
 
 /**
+ * The same file as markdown source.
+ *
+ * Controlled, unlike the Crepe editor beside it: a textarea takes new text
+ * without being torn down, so an edit merged in from another tab or a sync
+ * lands here by itself and `externalEdit` has nothing to remount. Both write
+ * through the same `onChange`, and a file is open in at most one pane, so the
+ * two editors never hold the same document at once.
+ *
+ * What it shows is what a save would write — Crepe re-serialises the document
+ * it parsed, so switching here after editing shows Crepe's markdown rather
+ * than the bytes the file was created with.
+ */
+function PlainTextEditor({ file, onChange }: { file: FSNode; onChange: (id: string, content: string) => void }) {
+  return (
+    <textarea
+      className="text-editor"
+      value={file.content ?? ""}
+      aria-label={`${file.name} as plain text`}
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+      autoComplete="off"
+      onChange={event => onChange(file.id, event.target.value)}
+    />
+  );
+}
+
+/**
+ * The button that switches between the two, shown in a pane's tab strip and
+ * in the mobile topbar — the same control in the two places the app puts its
+ * upper-right affordances.
+ */
+export function ViewToggle({
+  view,
+  className,
+  onToggle,
+}: {
+  view: EditorView;
+  className: string;
+  onToggle: () => void;
+}) {
+  const label = view === "rich" ? "Edit as plain text" : "Back to the formatted editor";
+  return (
+    <button className={className} title={label} aria-label={label} onClick={onToggle}>
+      {view === "rich" ? "</>" : "¶"}
+    </button>
+  );
+}
+
+/**
  * A file the editor must not open.
  *
  * Crepe would render the bytes as text and then write that reading straight
@@ -418,7 +476,7 @@ function BinaryFile({ file }: { file: FSNode }) {
   );
 }
 
-export function Editor({ file, externalEdit, onChange, onAssetAdded }: EditorProps) {
+export function Editor({ file, view, externalEdit, onChange, onAssetAdded }: EditorProps) {
   if (!file) {
     return (
       <div className="editor editor-empty">
@@ -439,21 +497,30 @@ export function Editor({ file, externalEdit, onChange, onAssetAdded }: EditorPro
     );
   }
 
+  // Switching view is a swap of one editor for the other, which works for the
+  // same reason `externalEdit` does: Crepe reads `defaultValue` at
+  // construction, and content has already flowed out of whichever editor was
+  // on screen (`markdownUpdated` and the textarea's `onChange` both land in
+  // `fs` synchronously), so the one coming up starts from the current text.
   return (
     <div className="editor">
-      {/*
-        The key carries `externalEdit` as well as the file id. Crepe is
-        uncontrolled and only reads `defaultValue` at construction, so
-        remounting is the only way to show text that arrived from another tab.
-        It costs the cursor position and undo history, which is why App only
-        bumps the counter for genuinely external edits and never for typing.
-      */}
-      <MilkdownEditor
-        key={`${file.id}:${externalEdit}`}
-        file={file}
-        onChange={onChange}
-        onAssetAdded={onAssetAdded}
-      />
+      {view === "text" ? (
+        <PlainTextEditor key={file.id} file={file} onChange={onChange} />
+      ) : (
+        /*
+          The key carries `externalEdit` as well as the file id. Crepe is
+          uncontrolled and only reads `defaultValue` at construction, so
+          remounting is the only way to show text that arrived from another tab.
+          It costs the cursor position and undo history, which is why App only
+          bumps the counter for genuinely external edits and never for typing.
+        */
+        <MilkdownEditor
+          key={`${file.id}:${externalEdit}`}
+          file={file}
+          onChange={onChange}
+          onAssetAdded={onAssetAdded}
+        />
+      )}
     </div>
   );
 }
