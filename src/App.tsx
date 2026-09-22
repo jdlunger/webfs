@@ -3,6 +3,8 @@ import "./index.css";
 import {
   type FSNode,
   type FileSystem,
+  type SortBy,
+  DEFAULT_SORT,
   canMove,
   childrenOf,
   findFirstFile,
@@ -13,6 +15,7 @@ import {
   remapId,
   ROOT_ID,
   segmentsOf,
+  touchFile,
   updateFileContent,
 } from "./fs";
 import { Sidebar } from "./Sidebar";
@@ -184,6 +187,13 @@ export function App() {
    * its folders would open wide after all.
    */
   const [foldPending, setFoldPending] = useState(false);
+  /**
+   * How the sidebar orders a folder's files. Up here with `collapsed` because
+   * it is the same kind of thing — a way of looking at this drive, remembered
+   * per drive — and because the sidebar's rows are rebuilt too often to hold
+   * it themselves.
+   */
+  const [sortBy, setSortBy] = useState<SortBy>(DEFAULT_SORT);
 
   // Tabs and the split view are a large-screen affordance; a phone keeps
   // showing one file at a time, as it always has.
@@ -266,6 +276,10 @@ export function App() {
     // Leave anything typed while the write was in flight queued for next time.
     if (pending.current.get(id)?.content === queued.content) pending.current.delete(id);
     baseContent.current.set(id, queued.content);
+    // Every local write lands here — a keystroke's, a cross-tab merge's, a
+    // sync result re-queued — so this is the one place the sidebar's "last
+    // modified" order has to be told the file moved.
+    setFs(prev => (prev ? touchFile(prev, id, Date.now()) : prev));
     announce({ kind: "file", drive: driveRef.current, path: segmentsOf(id) });
     requestSync.current();
   }, []);
@@ -411,6 +425,7 @@ export function App() {
     // A fold still waiting on the drive being left must not land on the one
     // being arrived at, whose own workspace may say its folders are open.
     setFoldPending(false);
+    setSortBy(DEFAULT_SORT);
     // Not the old drive's tree, for however long the new one takes to read.
     setFs(null);
 
@@ -437,6 +452,7 @@ export function App() {
         if (saved) {
           setCollapsed(new Set(saved.collapsed));
           setTextViews(Object.fromEntries(saved.textViews.map(id => [id, true])));
+          setSortBy(saved.sortBy);
         } else if (!seeding) {
           // No workspace: this drive is being opened for the first time, so
           // its tree arrives folded (see `initialCollapsed`). Not the drive
@@ -556,8 +572,12 @@ export function App() {
       // expanded again.
       collapsed: [...collapsed].filter(id => tree[id]?.type === "folder"),
       textViews: Object.keys(textViews).filter(id => textViews[id] && tree[id]?.type === "file"),
+      // Not filtered against the tree the way the two lists above are: it
+      // names an order, not a node, so there is nothing here that can go
+      // stale when a file disappears.
+      sortBy,
     });
-  }, [layout, collapsed, textViews, foldPending]);
+  }, [layout, collapsed, textViews, sortBy, foldPending]);
 
   // React to writes from other tabs.
   useEffect(
@@ -844,6 +864,8 @@ export function App() {
         openIds={allOpenIds(layout)}
         collapsed={collapsed}
         onToggleFolder={toggleFolder}
+        sortBy={sortBy}
+        onChangeSort={setSortBy}
         onSelectFile={handleSelectFile}
         onOpenBeside={wide ? handleOpenBeside : null}
         onCreate={handleCreate}

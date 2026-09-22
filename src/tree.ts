@@ -14,6 +14,7 @@ function addEntries(fs: FileSystem, entries: WalkEntry[], parentPath: string[], 
     const type: NodeType = entry.kind === "directory" ? "folder" : "file";
     fs[id] = { id, name: entry.name, type, parentId };
     if (entry.kind === "directory") addEntries(fs, entry.children, path, id);
+    else if (entry.lastModified !== undefined) fs[id]!.lastModified = entry.lastModified;
   }
 }
 

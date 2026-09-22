@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -8,7 +9,15 @@ import {
   type PointerEvent,
   type ReactNode,
 } from "react";
-import { type FileSystem, type FSNode, ROOT_ID, childrenOf } from "./fs";
+import {
+  type FileSystem,
+  type FSNode,
+  type SortBy,
+  ROOT_ID,
+  SORT_LABELS,
+  childrenOf,
+  searchTree,
+} from "./fs";
 import { ContextMenu, useContextMenuTrigger, type MenuItem, type MenuPosition } from "./ContextMenu";
 import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
 import {
@@ -33,6 +42,12 @@ interface SidebarProps {
    */
   collapsed: ReadonlySet<string>;
   onToggleFolder: (id: string) => void;
+  /**
+   * The order a folder's files are listed in. Held by `App.tsx` for the same
+   * reason `collapsed` is: it outlives the rows and is remembered per drive.
+   */
+  sortBy: SortBy;
+  onChangeSort: (sortBy: SortBy) => void;
   onSelectFile: (id: string) => void;
   /** Opens a file in the other pane. Null on narrow screens, which don't split. */
   onOpenBeside: ((id: string) => void) | null;
@@ -174,10 +189,21 @@ function SidebarResizer({ width, onWidth }: ResizerProps) {
   );
 }
 
-/** An open menu: `node` is null for the one the empty tree area opens. */
-interface OpenMenu {
-  node: FSNode | null;
-  position: MenuPosition;
+/**
+ * An open menu. Three of them share one slot because only one can be up at a
+ * time: a row's, the one the empty tree area opens, and the sort picker —
+ * which is a menu rather than a `<select>` so it can mark the order in effect
+ * and size its rows for a fingertip like every other menu here.
+ */
+type OpenMenu =
+  | { kind: "node"; node: FSNode; position: MenuPosition }
+  | { kind: "background"; position: MenuPosition }
+  | { kind: "sort"; position: MenuPosition };
+
+/** Opens a menu under a button, rather than at a pointer that has no position. */
+function menuPositionBelow(button: HTMLElement | null): MenuPosition {
+  const box = button?.getBoundingClientRect();
+  return box ? { x: box.left, y: box.bottom + 4 } : { x: 0, y: 0 };
 }
 
 export function Sidebar(props: SidebarProps) {
@@ -189,20 +215,45 @@ export function Sidebar(props: SidebarProps) {
   // two rows can't end up editing at once.
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
+  // A search is deliberately *not* remembered across reloads, unlike the sort
+  // order: filtering the tree is something you do for a moment, and coming
+  // back to a tree with most of it missing and no memory of why is worse than
+  // typing the query again.
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const sortButton = useRef<HTMLButtonElement>(null);
+
+  // Null when nothing is typed, which is what tells every row below to draw
+  // the whole tree rather than a filtered one.
+  const visible = useMemo(() => searchTree(props.fs, query), [props.fs, query]);
+
   const closeMenu = useCallback(() => setMenu(null), []);
-  const openNodeMenu = useCallback((node: FSNode, position: MenuPosition) => setMenu({ node, position }), []);
+  const openNodeMenu = useCallback((node: FSNode, position: MenuPosition) => setMenu({ kind: "node", node, position }), []);
   const backgroundTrigger = useContextMenuTrigger(
-    useCallback((position: MenuPosition) => setMenu({ node: null, position }), []),
+    useCallback((position: MenuPosition) => setMenu({ kind: "background", position }), []),
   );
 
-  const menuItems = (node: FSNode | null): MenuItem[] => {
-    if (!node) {
+  const closeSearch = () => {
+    setSearching(false);
+    setQuery("");
+  };
+
+  const menuItems = (open: OpenMenu): MenuItem[] => {
+    if (open.kind === "sort") {
+      return (Object.keys(SORT_LABELS) as SortBy[]).map(value => ({
+        label: SORT_LABELS[value],
+        selected: value === props.sortBy,
+        onSelect: () => props.onChangeSort(value),
+      }));
+    }
+    if (open.kind === "background") {
       return [
         { label: "New File", onSelect: () => props.onCreate(ROOT_ID, "file") },
         { label: "New Folder", onSelect: () => props.onCreate(ROOT_ID, "folder") },
       ];
     }
 
+    const node = open.node;
     const items: MenuItem[] = [];
     if (node.type === "folder") {
       items.push({ label: "New File", onSelect: () => props.onCreate(node.id, "file") });
@@ -233,6 +284,24 @@ export function Sidebar(props: SidebarProps) {
       <div className="sidebar-header">
         <span>Files</span>
         <div className="sidebar-header-actions">
+          <button
+            className={`icon-button ${searching ? "icon-button-active" : ""}`}
+            title="Search files"
+            aria-label="Search files"
+            aria-pressed={searching}
+            onClick={() => (searching ? closeSearch() : setSearching(true))}
+          >
+            🔍
+          </button>
+          <button
+            ref={sortButton}
+            className="icon-button"
+            title={`Sort by: ${SORT_LABELS[props.sortBy]}`}
+            aria-label={`Sort by: ${SORT_LABELS[props.sortBy]}`}
+            onClick={() => setMenu({ kind: "sort", position: menuPositionBelow(sortButton.current) })}
+          >
+            ⇅
+          </button>
           <button title="New file" onClick={() => props.onCreate(ROOT_ID, "file")}>
             + File
           </button>
@@ -241,6 +310,28 @@ export function Sidebar(props: SidebarProps) {
           </button>
         </div>
       </div>
+      {searching ? (
+        <div className="sidebar-search">
+          <input
+            autoFocus
+            // Not type="search": Chromium draws its own clear button inside
+            // the field, right beside the one next to it.
+            type="text"
+            className="sidebar-search-input"
+            placeholder="Filter by name…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            // Escape closes the field rather than only emptying it: an empty
+            // search box left open is a row of chrome doing nothing.
+            onKeyDown={e => {
+              if (e.key === "Escape") closeSearch();
+            }}
+          />
+          <button className="icon-button" title="Close search" aria-label="Close search" onClick={closeSearch}>
+            ✕
+          </button>
+        </div>
+      ) : null}
       <div
         className={`sidebar-tree ${rootDragOver ? "drop-target" : ""}`}
         {...backgroundTrigger}
@@ -257,30 +348,35 @@ export function Sidebar(props: SidebarProps) {
           if (id) props.onMove(id, ROOT_ID);
         }}
       >
-        {childrenOf(props.fs, ROOT_ID).map(node => (
-          <TreeNode
-            key={node.id}
-            node={node}
-            depth={0}
-            fs={props.fs}
-            selectedId={props.selectedId}
-            openIds={props.openIds}
-            collapsed={props.collapsed}
-            renamingId={renamingId}
-            onToggleFolder={props.onToggleFolder}
-            onSelectFile={props.onSelectFile}
-            onRename={props.onRename}
-            onMove={props.onMove}
-            onStartRename={setRenamingId}
-            onOpenMenu={openNodeMenu}
-          />
-        ))}
+        {childrenOf(props.fs, ROOT_ID, props.sortBy)
+          .filter(node => !visible || visible.has(node.id))
+          .map(node => (
+            <TreeNode
+              key={node.id}
+              node={node}
+              depth={0}
+              fs={props.fs}
+              selectedId={props.selectedId}
+              openIds={props.openIds}
+              collapsed={props.collapsed}
+              sortBy={props.sortBy}
+              visible={visible}
+              renamingId={renamingId}
+              onToggleFolder={props.onToggleFolder}
+              onSelectFile={props.onSelectFile}
+              onRename={props.onRename}
+              onMove={props.onMove}
+              onStartRename={setRenamingId}
+              onOpenMenu={openNodeMenu}
+            />
+          ))}
+        {visible && visible.size === 0 ? <p className="sidebar-empty">No files match “{query.trim()}”.</p> : null}
       </div>
       {props.footer}
       {/* No handle on a phone: the sidebar is a fixed-width drawer there, and
           a drag target down its edge would fight the tree's own scrolling. */}
       {wide ? <SidebarResizer width={width} onWidth={setWidth} /> : null}
-      {menu ? <ContextMenu position={menu.position} items={menuItems(menu.node)} onClose={closeMenu} /> : null}
+      {menu ? <ContextMenu position={menu.position} items={menuItems(menu)} onClose={closeMenu} /> : null}
     </div>
   );
 }
@@ -292,6 +388,9 @@ interface TreeNodeProps {
   selectedId: string | null;
   openIds: string[];
   collapsed: ReadonlySet<string>;
+  sortBy: SortBy;
+  /** Ids a search left standing, or null when nothing is being searched for. */
+  visible: ReadonlySet<string> | null;
   renamingId: string | null;
   onToggleFolder: (id: string) => void;
   onSelectFile: (id: string) => void;
@@ -302,12 +401,16 @@ interface TreeNodeProps {
 }
 
 function TreeNode(props: TreeNodeProps) {
-  const { node, depth, fs, selectedId, openIds, collapsed, renamingId, onSelectFile, onRename, onMove, onStartRename } =
+  const { node, depth, fs, selectedId, openIds, collapsed, sortBy, visible, renamingId, onSelectFile, onRename, onMove, onStartRename } =
     props;
   // A folder is open unless it's been closed, so a folder that appears later —
   // created here, or pulled by a sync — shows its contents rather than hiding
   // them behind a state nobody chose.
-  const expanded = !collapsed.has(node.id);
+  //
+  // A search overrides that outright: a collapsed folder hiding a match would
+  // defeat the thing entirely. `collapsed` isn't touched, so clearing the
+  // query leaves the tree folded exactly as it was.
+  const expanded = visible !== null || !collapsed.has(node.id);
   const [draftName, setDraftName] = useState(node.name);
   const [dragOver, setDragOver] = useState(false);
 
@@ -389,13 +492,16 @@ function TreeNode(props: TreeNodeProps) {
   const rowTrigger = renaming ? {} : menuTrigger;
 
   if (node.type === "folder") {
-    const kids = childrenOf(fs, node.id);
+    const kids = childrenOf(fs, node.id, sortBy).filter(child => !visible || visible.has(child.id));
     return (
       <div>
         <div
           className={`tree-row tree-folder ${dragOver ? "drop-target" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
-          onClick={() => props.onToggleFolder(node.id)}
+          // While searching, what is shown is the search's decision, so the
+          // chevron is a label rather than a control — a click that visibly
+          // did nothing would be worse than one that isn't offered.
+          onClick={visible === null ? () => props.onToggleFolder(node.id) : undefined}
           {...rowTrigger}
           {...dragHandlers}
         >
@@ -412,6 +518,8 @@ function TreeNode(props: TreeNodeProps) {
               selectedId={selectedId}
               openIds={openIds}
               collapsed={collapsed}
+              sortBy={sortBy}
+              visible={visible}
               renamingId={renamingId}
               onToggleFolder={props.onToggleFolder}
               onSelectFile={onSelectFile}

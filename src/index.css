@@ -113,6 +113,69 @@ body.resizing-sidebar {
   background: #3a3a3a;
 }
 
+/* Search and sort are glyphs rather than words: four labelled buttons plus
+   the title don't fit a 260px sidebar, and these two are the ones with a
+   recognisable icon. Both carry a title and an aria-label. */
+.sidebar-header-actions .icon-button {
+  padding: 3px 5px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.sidebar-header-actions .icon-button-active {
+  background: #3f4a5f;
+  color: #fff;
+}
+
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #2c2c2c;
+}
+
+.sidebar-search-input {
+  flex: 1;
+  min-width: 0;
+  background: #101010;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #ddd;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.sidebar-search-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+}
+
+.sidebar-search .icon-button {
+  background: #2a2a2a;
+  color: #ccc;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 7px;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sidebar-search .icon-button:hover {
+  background: #3a3a3a;
+}
+
+/* Said only when a search matches nothing: an empty tree with no explanation
+   reads as lost files. */
+.sidebar-empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: #777;
+  font-size: 12px;
+}
+
 .sidebar-tree {
   flex: 1;
   overflow-y: auto;
@@ -484,7 +547,31 @@ body.resizing-sidebar {
     font-size: 14px;
   }
 
+  /* Four tap-sized buttons and the title don't fit the drawer's width, and
+     what wrapped was "+ File" and "+ Folder" onto two lines each. The title
+     is what goes: a drawer full of file names doesn't need to be labelled
+     "Files", where a button that has folded in half is unreadable. */
+  .sidebar-header > span {
+    display: none;
+  }
+
   .sidebar-header-actions button {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .sidebar-header-actions .icon-button {
+    padding: 8px 10px;
+  }
+
+  /* 16px, like .rename-input: anything smaller and iOS zooms the viewport in
+     when the field takes focus, leaving the drawer half off-screen. */
+  .sidebar-search-input {
+    font-size: 16px;
+    padding: 8px;
+  }
+
+  .sidebar-search .icon-button {
     padding: 8px 12px;
     font-size: 14px;
   }

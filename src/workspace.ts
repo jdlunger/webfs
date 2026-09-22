@@ -23,6 +23,7 @@
  */
 import { type FileSystem, ROOT_ID, idOf, segmentsOf } from "./fs";
 import { type Pane, type PaneLayout, MAX_PANES } from "./panes";
+import { DEFAULT_SORT, isSortBy, type SortBy } from "./fs";
 import { driveId, type Drive } from "./drives";
 
 const WORKSPACE_PREFIX = "webfs:workspace:";
@@ -46,6 +47,15 @@ export interface Workspace {
   collapsed: string[];
   /** File ids shown as markdown source rather than in Crepe. */
   textViews: string[];
+  /**
+   * The order the sidebar lists a folder's files in. Remembered like the rest
+   * of this — it's a way of looking at one drive's notes, not a fact about
+   * them — and, like the two lists above, advisory: an order this build
+   * doesn't recognise falls back to the default instead of dropping the entry.
+   * That is also what lets a new order be added without bumping `VERSION` and
+   * throwing away everyone's tabs.
+   */
+  sortBy: SortBy;
 }
 
 const isStringArray = (value: unknown): value is string[] =>
@@ -97,19 +107,20 @@ export function parseWorkspace(raw: string | null): Workspace | null {
   }
   if (!parsed || typeof parsed !== "object") return null;
 
-  const { version, panes, focused, collapsed, textViews } = parsed as Record<string, unknown>;
+  const { version, panes, focused, collapsed, textViews, sortBy } = parsed as Record<string, unknown>;
   if (version !== VERSION) return null;
 
   const layout = parseLayout(panes, focused);
   if (!layout) return null;
 
-  // The two lists are advisory — a bad one costs an expanded folder or a
-  // rendered document, not a broken app — so they're dropped on their own
-  // rather than taking the layout down with them.
+  // The three below are advisory — a bad one costs an expanded folder, a
+  // rendered document or a listing order, not a broken app — so they fall
+  // back on their own rather than taking the layout down with them.
   return {
     layout,
     collapsed: isStringArray(collapsed) ? collapsed : [],
     textViews: isStringArray(textViews) ? textViews : [],
+    sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_SORT,
   };
 }
 
@@ -120,6 +131,7 @@ export function serializeWorkspace(workspace: Workspace): string {
     focused: workspace.layout.focused,
     collapsed: workspace.collapsed,
     textViews: workspace.textViews,
+    sortBy: workspace.sortBy,
   });
 }
 

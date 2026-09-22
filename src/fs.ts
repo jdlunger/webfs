@@ -30,6 +30,12 @@ export interface FSNode {
    * back would destroy the file.
    */
   binary?: boolean;
+  /**
+   * When the file was last written, as OPFS reports it. Only files have one —
+   * a directory carries no timestamp — so a folder sorted by date falls back
+   * to its name.
+   */
+  lastModified?: number;
 }
 
 export type FileSystem = Record<string, FSNode>;
@@ -61,19 +67,127 @@ export function getNodePath(id: string): string {
   return "/" + segmentsOf(id).map(encodeURIComponent).join("/");
 }
 
-export function childrenOf(fs: FileSystem, parentId: string): FSNode[] {
+/**
+ * The orders the sidebar offers. Stored per drive (`workspace.ts`), so a new
+ * value here has to survive being read back by a build that predates it —
+ * `isSortBy` is what makes an unrecognised one fall back rather than break.
+ */
+export type SortBy = "name" | "name-desc" | "modified";
+
+export const DEFAULT_SORT: SortBy = "name";
+
+const SORTS: readonly SortBy[] = ["name", "name-desc", "modified"];
+
+export function isSortBy(value: unknown): value is SortBy {
+  return typeof value === "string" && (SORTS as readonly string[]).includes(value);
+}
+
+export const SORT_LABELS: Record<SortBy, string> = {
+  name: "Name (A–Z)",
+  "name-desc": "Name (Z–A)",
+  modified: "Last modified",
+};
+
+const byName = (a: FSNode, b: FSNode) => a.name.localeCompare(b.name);
+
+/**
+ * Folders always come first and always by name, whatever the order is.
+ *
+ * Interleaving them by date would need a timestamp they don't have (OPFS
+ * gives directories none), and a tree whose folders move around as their
+ * contents are edited is harder to navigate than one where they sit still.
+ * So the order chosen applies to the files, which is where it was aimed.
+ */
+function comparator(sortBy: SortBy): (a: FSNode, b: FSNode) => number {
+  if (sortBy === "name-desc") return (a, b) => (a.type === "folder" ? byName(a, b) : byName(b, a));
+  if (sortBy === "modified") {
+    return (a, b) => {
+      if (a.type === "folder") return byName(a, b);
+      // A file whose timestamp didn't come back sorts last rather than first:
+      // "unknown" is not "brand new".
+      const at = a.lastModified ?? -Infinity;
+      const bt = b.lastModified ?? -Infinity;
+      return at === bt ? byName(a, b) : bt - at;
+    };
+  }
+  return byName;
+}
+
+export function childrenOf(fs: FileSystem, parentId: string, sortBy: SortBy = DEFAULT_SORT): FSNode[] {
+  const compare = comparator(sortBy);
   return Object.values(fs)
     .filter(n => n.parentId === parentId)
     .sort((a, b) => {
       if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
-      return a.name.localeCompare(b.name);
+      return compare(a, b);
     });
+}
+
+/**
+ * The ids the sidebar draws for a search, or null for "show everything".
+ *
+ * A node is in the set if its own name matches, if something below it does
+ * (or the match would be unreachable — its folders have to be drawn to get to
+ * it), or if a folder above it matched: searching for a folder by name is a
+ * way of asking what is in it, so the whole subtree comes along.
+ *
+ * Matching is on the name rather than the path, so a query never quietly
+ * turns into "everything under a folder that happens to be spelt this way".
+ */
+export function searchTree(fs: FileSystem, query: string): ReadonlySet<string> | null {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return null;
+
+  const visible = new Set<string>();
+  // Walking up stops at the first ancestor already revealed: if it is in, so
+  // is everything above it.
+  const revealUpwards = (id: string) => {
+    let current: string | null = id;
+    while (current !== null && current !== ROOT_ID && !visible.has(current)) {
+      visible.add(current);
+      current = fs[current]?.parentId ?? null;
+    }
+  };
+
+  const nodes = Object.values(fs).filter(n => n.id !== ROOT_ID);
+  const matchedFolders: string[] = [];
+  for (const node of nodes) {
+    if (!node.name.toLowerCase().includes(needle)) continue;
+    revealUpwards(node.id);
+    if (node.type === "folder") matchedFolders.push(`${node.id}/`);
+  }
+  if (matchedFolders.length > 0) {
+    for (const node of nodes) {
+      if (matchedFolders.some(prefix => node.id.startsWith(prefix))) visible.add(node.id);
+    }
+  }
+  return visible;
 }
 
 export function updateFileContent(fs: FileSystem, id: string, content: string): FileSystem {
   const node = fs[id];
   if (!node || node.type !== "file") return fs;
   return { ...fs, [id]: { ...node, content, binary: false } };
+}
+
+/**
+ * Records that a file has just been written, for the sake of the sort order.
+ *
+ * The tree is only re-walked on *structural* changes, so without this a save
+ * leaves the timestamp the last walk read — and "last modified" would list a
+ * file you are editing right now as the oldest thing in the folder until
+ * something unrelated happened. `at` is when the write landed rather than
+ * what OPFS recorded: reading it back would cost a `getFile()` per save to
+ * learn a number a millisecond away from this one, and the next walk replaces
+ * it with the real value regardless.
+ *
+ * Returns the same record when there is nothing to change, like the two
+ * above, so an effect keyed on `fs` can't drive itself in a circle.
+ */
+export function touchFile(fs: FileSystem, id: string, at: number): FileSystem {
+  const node = fs[id];
+  if (!node || node.type !== "file" || node.lastModified === at) return fs;
+  return { ...fs, [id]: { ...node, lastModified: at } };
 }
 
 /**

@@ -7,6 +7,7 @@
 import { test, expect } from "bun:test";
 import { openIds, singlePane, splitPane, openBeside } from "./src/panes";
 import { type Workspace, initialCollapsed, parseWorkspace, serializeWorkspace } from "./src/workspace";
+import { DEFAULT_SORT } from "./src/fs";
 import { projectTree } from "./src/tree";
 import type { WalkEntry } from "./src/storage";
 
@@ -17,6 +18,7 @@ const workspace = (overrides: Partial<Workspace> = {}): Workspace => ({
   layout: singlePane("Notes/todo.md"),
   collapsed: [],
   textViews: [],
+  sortBy: DEFAULT_SORT,
   ...overrides,
 });
 
@@ -25,6 +27,7 @@ test("a workspace survives the round trip through storage", () => {
     layout: openBeside(splitPane(singlePane("Notes/todo.md")), "Projects/ideas.md"),
     collapsed: ["Notes"],
     textViews: ["Projects/ideas.md"],
+    sortBy: "modified",
   });
   expect(parseWorkspace(serializeWorkspace(original))).toEqual(original);
 });
@@ -132,4 +135,16 @@ test("a tree with nothing pulled into it yet collapses nothing", () => {
   // when the app loads, and folding away what isn't there would leave the
   // repository to arrive wide open.
   expect(initialCollapsed(projectTree([]), [])).toEqual([]);
+});
+
+// The order is advisory like the two lists, and for a reason worth pinning:
+// it's what lets another order be added later without bumping VERSION and
+// throwing away everyone's tabs to deliver it.
+test("an order this build doesn't know falls back rather than dropping the entry", () => {
+  const entry = (sortBy: unknown) =>
+    JSON.stringify({ version: 1, panes: [{ tabs: ["a.md"], activeId: "a.md" }], focused: 0, sortBy });
+  for (const bad of ["size", 7, null, undefined]) {
+    expect(parseWorkspace(entry(bad))).toEqual(workspace({ layout: singlePane("a.md") }));
+  }
+  expect(parseWorkspace(entry("name-desc"))?.sortBy).toBe("name-desc");
 });

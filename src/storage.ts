@@ -116,6 +116,30 @@ export interface WalkEntry {
   name: string;
   kind: "file" | "directory";
   children: WalkEntry[];
+  /**
+   * Files only, and best-effort. Directories have no timestamp in OPFS, and a
+   * file can be deleted between being listed and being opened.
+   */
+  lastModified?: number;
+}
+
+/**
+ * When a file was last written, or undefined if it wouldn't say.
+ *
+ * This costs a `getFile()` per file on every walk — and the whole tree is
+ * re-walked after every structural change — which is the price of being able
+ * to sort by date at all: nothing else here records one, and a timestamp kept
+ * on the side would be one more thing to hold in step with the directory that
+ * is meant to be the only index.
+ */
+async function modifiedTime(dir: FileSystemDirectoryHandle, name: string): Promise<number | undefined> {
+  try {
+    return (await (await dir.getFileHandle(name)).getFile()).lastModified;
+  } catch {
+    // Vanished under the walk, or a handle that won't open. Sorting treats an
+    // unknown time as oldest rather than guessing one.
+    return undefined;
+  }
 }
 
 /** Reads the whole tree. Cheap for a notes app; the only index that exists. */
@@ -130,11 +154,11 @@ async function walk(path: Path = []): Promise<WalkEntry[]> {
   }
   const entries: WalkEntry[] = [];
   for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
-    entries.push({
-      name,
-      kind: handle.kind,
-      children: handle.kind === "directory" ? await walk([...path, name]) : [],
-    });
+    entries.push(
+      handle.kind === "directory"
+        ? { name, kind: handle.kind, children: await walk([...path, name]) }
+        : { name, kind: handle.kind, children: [], lastModified: await modifiedTime(dir, name) },
+    );
   }
   return entries;
 }

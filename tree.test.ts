@@ -7,7 +7,18 @@
  * replaced the old id registry now that a node's id *is* its path.
  */
 import { test, expect } from "bun:test";
-import { ROOT_ID, canMove, childrenOf, findNodeByPath, getNodePath, idOf as idOf2, segmentsOf } from "./src/fs";
+import {
+  type SortBy,
+  ROOT_ID,
+  canMove,
+  childrenOf,
+  findNodeByPath,
+  getNodePath,
+  idOf as idOf2,
+  searchTree,
+  segmentsOf,
+  touchFile,
+} from "./src/fs";
 import { adoptContent, projectTree } from "./src/tree";
 import { isValidName } from "./src/storage";
 import type { WalkEntry } from "./src/storage";
@@ -91,4 +102,73 @@ test("only names OPFS actually rejects are treated as invalid", () => {
   for (const ok of ["notes.md", "café.md", "日本語.md", "what: is? this*", ".hidden", "trailing "]) {
     expect(isValidName(ok)).toBe(true);
   }
+});
+
+// --- what the sidebar lists, and in what order -------------------------------
+
+const timed = (name: string, lastModified: number): WalkEntry => ({ name, kind: "file", children: [], lastModified });
+
+test("a file's modified time is carried through the projection", () => {
+  const fs = projectTree([dir("Notes", [timed("todo.md", 1200)])]);
+  expect(fs[idOf(fs, "/Notes/todo.md")]!.lastModified).toBe(1200);
+  // Directories have no timestamp in OPFS, so the node carries none either
+  // rather than inventing one that sorting would then believe.
+  expect(fs[idOf(fs, "/Notes")]!.lastModified).toBeUndefined();
+});
+
+test("a write moves a file's timestamp without waiting for the next walk", () => {
+  const fs = projectTree([dir("Notes", [timed("a.md", 100), timed("z.md", 900)])]);
+  const notes = idOf(fs, "/Notes");
+  const a = idOf(fs, "/Notes/a.md");
+
+  expect(childrenOf(fs, notes, "modified").map(n => n.name)).toEqual(["z.md", "a.md"]);
+  expect(childrenOf(touchFile(fs, a, 1000), notes, "modified").map(n => n.name)).toEqual(["a.md", "z.md"]);
+  // The same record back when nothing changes, so an effect keyed on `fs`
+  // can't drive itself in a circle — as for `markFileBinary`.
+  expect(touchFile(fs, a, 100)).toBe(fs);
+  expect(touchFile(fs, notes, 100)).toBe(fs);
+  expect(touchFile(fs, "Notes/gone.md", 100)).toBe(fs);
+});
+
+test("sorting reorders a folder's files but never lifts one above a folder", () => {
+  const fs = projectTree([dir("Notes", [timed("a.md", 100), timed("z.md", 900), dir("Sub")])]);
+  const notes = idOf(fs, "/Notes");
+  const names = (sortBy: SortBy) => childrenOf(fs, notes, sortBy).map(n => n.name);
+
+  expect(names("name")).toEqual(["Sub", "a.md", "z.md"]);
+  expect(names("name-desc")).toEqual(["Sub", "z.md", "a.md"]);
+  expect(names("modified")).toEqual(["Sub", "z.md", "a.md"]);
+});
+
+test("a file with no modified time sorts last, since unknown isn't new", () => {
+  const fs = projectTree([dir("Notes", [file("mystery.md"), timed("old.md", 1)])]);
+  expect(childrenOf(fs, idOf(fs, "/Notes"), "modified").map(n => n.name)).toEqual(["old.md", "mystery.md"]);
+});
+
+test("an empty query means the whole tree, not an empty one", () => {
+  const fs = projectTree(sample());
+  expect(searchTree(fs, "")).toBeNull();
+  expect(searchTree(fs, "   ")).toBeNull();
+});
+
+test("a matching file brings the folders it takes to reach it", () => {
+  const fs = projectTree(sample());
+  const visible = searchTree(fs, "TODO")!;
+  // Case-insensitive, and the ancestors are in so the match is reachable.
+  expect([...visible].sort()).toEqual(["Notes", "Notes/todo.md"]);
+  expect(visible.has(ROOT_ID)).toBe(false);
+});
+
+test("a matching folder brings its whole subtree, since that's what was asked", () => {
+  const fs = projectTree([dir("Notes", [dir("Trip", [file("packing.md")]), file("todo.md")])]);
+  const visible = searchTree(fs, "trip")!;
+  expect([...visible].sort()).toEqual(["Notes", "Notes/Trip", "Notes/Trip/packing.md"]);
+});
+
+test("matching is on the name, not the path it sits at", () => {
+  const fs = projectTree([dir("Trip", [file("notes.md")])]);
+  // "p/n" is in the id "Trip/notes.md" and in neither name: a query only ever
+  // means a name, so it can't quietly span a separator.
+  expect(searchTree(fs, "p/n")!.size).toBe(0);
+  expect(searchTree(fs, "nothing here")!.size).toBe(0);
 });

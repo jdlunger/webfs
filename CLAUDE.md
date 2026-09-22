@@ -7,8 +7,8 @@ OPFS (see Storage below), there is no backend API. `src/index.ts`
 production is a static export (see Deployment below), not this server.
 
 Key files: `App.tsx` (top-level state + URL routing + cross-tab
-reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
-(Milkdown integration), `drives.ts` (what a drive is, and where its files
+reconciliation), `Sidebar.tsx` (file tree, rename/move UI, search and sort),
+`Editor.tsx` (Milkdown integration), `drives.ts` (what a drive is, and where its files
 live), `storage.ts` (thin OPFS layer, rooted at a drive's mount), `tree.ts`
 (projects a drive's folder into the in-memory record), `fs.ts` (pure queries
 over that record), `panes.ts` (which files are open, in which pane),
@@ -153,8 +153,9 @@ strip) swaps Crepe for a textarea holding the file's markdown.
 
 ## What a reload comes back to (`workspace.ts`)
 
-Which files are open in which pane, which folders are collapsed, and which
-files are shown as source are remembered in localStorage
+Which files are open in which pane, which folders are collapsed, which files
+are shown as source, and the order the tree is listed in are remembered in
+localStorage
 (`webfs:workspace:<drive id>`) and restored on load. `workspace.ts` is the
 store and its validation; `App.tsx` holds the state and decides what to do
 with what comes back.
@@ -272,6 +273,52 @@ with what comes back.
   persisting a width is that someone cares about it, and this is the one
   control here a keyboard otherwise couldn't reach. Double-click resets it.
 
+## Searching and sorting the tree
+
+The two buttons at the top of the sidebar. `searchTree` and `childrenOf` in
+`fs.ts` (pure, `tree.test.ts`), the header and filtering in `Sidebar.tsx`,
+`lastModified` from `storage.ts`, and `bun run browser sidebar` end to end.
+
+- **Both are queries over the tree, so both live in `fs.ts`.** Nothing is
+  indexed and nothing is cached: the record is already in memory and a notes
+  tree is small, so a filter is one pass over it and an order is a `sort`.
+- **A search matches names, not paths.** Matching the id would mean a query
+  spelt like a folder silently returned everything beneath it — and worse,
+  could span a `/`. A folder whose *name* matches does bring its whole subtree,
+  because that is what searching for a folder by name is asking.
+- **A search outranks a collapsed folder.** Filtering draws the tree expanded
+  whatever `collapsed` says, since a fold hiding a match would defeat the
+  thing; `collapsed` is left untouched, so clearing the query gives back the
+  tree exactly as it was folded. While a search is up, a folder row's chevron
+  is a label rather than a control — the search decides what's shown, and a
+  click that visibly did nothing is worse than one that isn't offered.
+- **The search isn't remembered across reloads, and the order is.** An order
+  is how you like to read this drive; a filter is something you do for a
+  moment, and coming back to a tree with most of it missing and no memory of
+  why is its own bug report.
+- **Folders always sort first and always by name.** OPFS gives a directory no
+  timestamp, so there is nothing to order them by under "Last modified", and
+  folders that shuffle about as their contents are edited are harder to
+  navigate than ones that stay put. The chosen order applies to files.
+- **`lastModified` costs a `getFile()` per file on every walk.** That is the
+  price of being able to sort by date at all — nothing else here records one,
+  and a timestamp kept on the side would be a second index to hold in step
+  with the directory that is meant to be the only one. Cheap at notes scale,
+  and worth knowing before the walk grows anything else per entry.
+- **A save stamps the node itself** (`touchFile`, called from `flushWrite`).
+  The tree is only re-walked on *structural* changes, so without that the
+  order reads whatever the last walk saw, and the file you are editing right
+  now sits at the bottom of its folder until something unrelated happens. The
+  browser suite caught exactly that. The value is when the write landed rather
+  than what OPFS recorded — a millisecond apart, and the next walk replaces it.
+- **The order is advisory in the stored workspace**, like the collapsed and
+  source-view lists: an order this build doesn't recognise falls back to the
+  default instead of dropping the entry. That is what lets another order be
+  added later without bumping `VERSION` and throwing away everyone's tabs.
+- **The mobile drawer drops the "Files" title**, because four tap-sized
+  buttons and a title don't fit across it — what wrapped was `+ File` and
+  `+ Folder`, folded in half. A drawer full of file names doesn't need to be
+  labelled.
 
 ## Mobile (iOS Safari) considerations
 
@@ -474,7 +521,8 @@ there is more than one.
   reproduced on the first load of `bun dev` and in every browser suite.
 - `bun test` covers `merge.ts` (`merge.test.ts`), `tree.ts`
   (`tree.test.ts`: projection, id stability across rename/move, name
-  validation) and `panes.ts` (`panes.test.ts`). OPFS itself can't run headless, so seeding, rename, folder
+  validation, and the tree queries in `fs.ts` — sorting, searching,
+  `touchFile`) and `panes.ts` (`panes.test.ts`). OPFS itself can't run headless, so seeding, rename, folder
   moves, two-tab merging and offline are verified by driving real Chromium
   tabs — see Browser suites below.
 
@@ -839,8 +887,8 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `wikilinks`, `vault`,
-  `view`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `wikilinks`,
+  `vault`, `view`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
