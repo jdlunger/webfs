@@ -32,6 +32,17 @@ Right-click (or press and hold, on a touch screen) a file or folder in the
 sidebar for rename, move and delete, and for creating a file or folder inside
 it.
 
+## Obsidian vaults
+
+Notes written in Obsidian link their images with `![[Pasted image 2026.png]]`
+rather than markdown's `![](…)`. Those embeds are displayed here, including the
+`|541` and `| center |` options after the name, and are written back exactly as
+they were — editing a note doesn't rewrite them.
+
+An embed names a file without saying where it is. It's looked for beside the
+note first, and then in a `Media/` folder at the top level, which is where
+Obsidian keeps attachments by default.
+
 ## Tests
 
 ```bash

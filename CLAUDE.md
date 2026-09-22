@@ -439,6 +439,69 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   to the note's own folder, which is a directory. `assets.test.ts` covers
   both, which is how the second one was found.
 
+## Obsidian embeds (`![[image.png]]`)
+
+`wikilinks.ts` (the syntax, pure), the node registered in `Editor.tsx`, and
+`assetCandidates` in `assets.ts`. Driven by `bun run browser wikilinks`.
+
+A vault written in Obsidian links its images with `![[Pasted image
+20260905101712.png|541]]`, which is not markdown — and that is the whole
+problem.
+
+- **Without this, opening such a note destroys it.** CommonMark has no such
+  construct, so remark parses the embed as literal text and remark-stringify
+  escapes it on the way back out: `!\[\[Pasted image…]]`, which Obsidian no
+  longer renders. Crepe writes the document back on the first keystroke, so a
+  single character typed in a note was enough to break every image in it — and
+  sync would push the damage. Recognising the syntax is what stops that; the
+  rendering is almost a side effect.
+- **`raw` is the text between the brackets, verbatim**, and serializing puts
+  it back unchanged. Nothing normalises `x.png | center | 623` into
+  `x.png|center|623`: the target and the display options are re-derived from
+  `raw` every time they're needed. A note that came back subtly different from
+  how it went in would turn merely *opening* a file into a sync change, across
+  a whole vault at once.
+- **It takes a remark plugin *and* a node schema**, because remark owns both
+  ends. The plugin cuts embeds out of the text nodes remark produced *and*
+  pushes a `toMarkdownExtensions` handler — without the handler,
+  remark-stringify refuses to serialize a node type it has never heard of.
+  `$remark` and `$node` come from `@milkdown/kit/utils`; Crepe's own Latex
+  feature is the worked example to copy if this needs extending.
+- **Only images are claimed.** Obsidian embeds notes and PDFs with the same
+  syntax; turning one into an `<img>` would show a broken image where a legible
+  name used to be. Those (and bare `[[links]]`, which webfs doesn't handle at
+  all) are still escaped on save — the corruption above, unfixed for everything
+  that isn't an image. Worth knowing before pointing webfs at a vault that
+  uses them.
+- **`toDOM` is synchronous and the bytes aren't**, so the node renders a span
+  with an empty `<img>` and fills in `src` when the read lands. A link that
+  resolves to nothing shows its own source (`![[missing.png]]`) rather than
+  leaving a gap, so it's clear *which* embed is broken.
+- **Object URLs are cached per link within an editor** (`loading` in
+  `Editor.tsx`). ProseMirror re-runs `toDOM` when a node is re-created, and a
+  note here can hold seven embeds; without the cache each render minted new
+  URLs for pictures already on screen and they accumulated until unmount.
+
+### The `Media/` fallback
+
+`assetCandidates` returns the paths to try, best interpretation first: where
+the link actually points, then `Media/<name>`.
+
+- **A vault keeps every attachment in one folder at the root** and refers to it
+  by bare filename from any depth, so `![[Pasted image…png]]` in
+  `Physiologie/Sa 05.09.2026.md` means `Media/Pasted image…png`. webfs resolves
+  links the way GitHub does — relative to the note — which makes that a file
+  beside the note that isn't there.
+- **It is a fallback, never a preference.** The direct path is always read
+  first, so webfs's own `assets/` links (which GitHub also resolves) keep
+  working unchanged; `Media/` is only reached once the honest interpretation
+  has found nothing. That also means it costs one extra miss on a link that
+  was broken anyway.
+- **The name is hardcoded rather than configured.** It's Obsidian's default
+  and the only value this has ever needed; a setting would be a second thing
+  to keep in step with the attachment folder in `.obsidian/app.json`, which
+  webfs doesn't read.
+
 ## Browser suites (`bun run browser`)
 
 `browser/` drives the real app in Chromium, because the half of webfs that
@@ -448,7 +511,7 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `wikilinks`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
