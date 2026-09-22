@@ -11,6 +11,20 @@ import type { Browser, Page } from "playwright";
 import { Checks, chooseFromContextMenu, asText, openApp, openFile, opfsFiles, typeInEditor, waitUntil } from "./harness";
 
 const tabNames = (page: Page) => page.locator(".tab-name").allInnerTexts();
+
+/**
+ * The paths of the open tabs, which is what a rename, a move or a delete
+ * actually has to move.
+ *
+ * A tab's title is its id, straight from the layout, so this says what the
+ * tab points at rather than what it's labelled. The label comes from the
+ * tree instead (`fs[id]?.name ?? id`) and lags it by a render — after a
+ * delete there is a frame where the file is gone from the tree but the tab
+ * is still there, labelled with its whole path. Asserting on names caught
+ * that frame and read it as the tab having closed.
+ */
+const tabIds = (page: Page) =>
+  page.locator(".tab").evaluateAll(tabs => tabs.map(tab => tab.getAttribute("title") ?? ""));
 const paneCount = (page: Page) => page.locator(".pane").count();
 
 /** The text OPFS holds for a path, or "" while it isn't there yet. */
@@ -104,7 +118,12 @@ export default async function run(browser: Browser): Promise<number> {
   await page.keyboard.press("Enter");
   const renamed = await waitUntil("the rename to land in OPFS", async () => Boolean((await opfsFiles(page))["Projects/plans.md"]));
   checks.ok("Rename from the menu renames the file", renamed);
-  checks.ok("an open tab follows the rename", (await tabNames(page)).includes("plans.md"), (await tabNames(page)).join(","));
+  // The tab follows on the next tree refresh, not with the keypress, so every
+  // assertion from here down has to wait for one rather than read once.
+  const tabRenamed = await waitUntil("the tab to follow the rename", async () =>
+    (await tabIds(page)).includes("Projects/plans.md"),
+  );
+  checks.ok("an open tab follows the rename", tabRenamed, (await tabIds(page)).join(","));
   checks.ok("the renamed file keeps its text", (await stored(page, "Projects/plans.md")).includes("right pane wrote this"));
 
   // "Move to…" is a submenu, and the only way to move by touch.
@@ -114,12 +133,19 @@ export default async function run(browser: Browser): Promise<number> {
   await page.locator('.context-submenu .context-menu-item:has-text("/Notes")').click();
   const moved = await waitUntil("the move to land in OPFS", async () => Boolean((await opfsFiles(page))["Notes/plans.md"]));
   checks.ok("Move to… moves the file", moved, Object.keys(await opfsFiles(page)).join(", "));
-  checks.ok("an open tab follows the move", (await tabNames(page)).includes("plans.md"), (await tabNames(page)).join(","));
+  const tabMoved = await waitUntil("the tab to follow the move", async () => (await tabIds(page)).includes("Notes/plans.md"));
+  checks.ok("an open tab follows the move", tabMoved, (await tabIds(page)).join(","));
 
   await chooseFromContextMenu(page, '.tree-row:has-text("plans.md")', "Delete");
   const deleted = await waitUntil("the delete to land in OPFS", async () => !(await opfsFiles(page))["Notes/plans.md"]);
   checks.ok("Delete from the menu deletes the file", deleted);
-  checks.ok("the deleted file's tab closes with it", !(await tabNames(page)).includes("plans.md"), (await tabNames(page)).join(","));
+  // The whole strip, not the absence of one name: mid-refresh the tab is still
+  // open under its full path, which "plans.md is not among the names" reads as
+  // success. This flaked about one run in four for exactly that reason.
+  const tabClosed = await waitUntil("the deleted file's tab to close", async () =>
+    (await tabIds(page)).join(",") === "Notes/welcome.md",
+  );
+  checks.ok("the deleted file's tab closes with it", tabClosed, (await tabIds(page)).join(","));
 
   await context.close();
   await checkTouch(browser, checks);

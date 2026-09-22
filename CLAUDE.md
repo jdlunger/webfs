@@ -626,6 +626,14 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   `vault` suite opens a note, waits out both debounces and checks the file is
   byte-identical. Every rewrite bug here was invisible on screen, so the only
   way to catch one is to read the bytes back.
+- **Assert on what a thing *is*, not what it's labelled.** A tab's `title` is
+  its path, straight from the layout; its visible name comes from the tree and
+  lags by a render, because `pruneMissing` runs in an effect on `fs`. So after
+  a delete there is a frame where the file is gone from the tree but the tab is
+  still open, labelled with its whole path — and "plans.md is not among the tab
+  names" reads that frame as the tab having closed. It flaked about one run in
+  four until the check moved to the ids, and waited for the whole strip rather
+  than the absence of one name.
 - **Poll outcomes, never the status line.** It shows what the *last* sync
   did, so asserting on it right after clicking Sync reads the previous run
   and passes for the wrong reason — which it did, hiding a real failure.
