@@ -676,6 +676,39 @@ depend on knowing:
 If the deploy target or path ever changes, both the `"/webfs"` literal in
 `build.ts` and in `public/404.html` need updating together.
 
+## The version in the corner
+
+`version.ts` (reading the define), `build.ts` (computing it), `TabStrip.tsx`
+(`VersionTag`, rendered there and in the mobile topbar), `version.test.ts`.
+
+- **The number is `git rev-list --count HEAD` at build time**, inlined as
+  `process.env.BUN_PUBLIC_VERSION` exactly the way `BASE_PATH` is — including
+  the try/catch, for the same reason (an un-inlined `process.env.X` references
+  a `process` global a browser doesn't have, and *throws* rather than giving
+  undefined). Nothing is checked in and nothing has to be bumped by hand.
+- **It exists to answer "am I on the current deploy?"** That is not idle
+  curiosity here: the service worker serves the shell from a cache, and a
+  stale one stranded a device on an old build once already (see the PWA notes
+  below). On a phone there is no devtools and no reload that clears it, so
+  without a version on screen the question is unanswerable.
+- **A shallow checkout gets no number at all.** `actions/checkout` clones
+  depth 1 by default, and `rev-list --count` counts *the history it has* — so
+  the count comes back 1, and the next deploy says 1 again: a version that
+  silently resets and climbs again, which is worse than none because it looks
+  right. `build.ts` checks `rev-parse --is-shallow-repository` and refuses,
+  the app shows "dev" where the number goes, and the workflow passes
+  `fetch-depth: 0`. If that ever comes off, the deployed app says so itself
+  rather than quietly renumbering.
+- **Rendered in the tab strip of the *rightmost* pane, and in the mobile
+  topbar** — the two places this app puts its upper-right affordances, the
+  same split `ViewToggle` has. Both are in the DOM at once and CSS shows
+  exactly one; `last` keeps a split view from showing it twice.
+- `version.test.ts` covers the labels and, more to the point, builds the
+  module twice: once with the defines (asserting no `process.env` survives)
+  and once without, running *that* bundle with `process` shadowed, since
+  importing it into Bun — which has `process` — would pass without ever
+  reaching the case the try/catch is for.
+
 ## PWA (Add to Home Screen)
 
 `public/manifest.webmanifest`, `public/sw.js`, and `public/icons/*.png` make

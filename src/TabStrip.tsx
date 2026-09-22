@@ -1,6 +1,7 @@
 import { ViewToggle, type EditorView } from "./Editor";
 import type { FileSystem } from "./fs";
 import type { Pane } from "./panes";
+import { versionLabel, versionTitle } from "./version";
 
 /**
  * A pane's row of open files, and the button that splits or closes it.
@@ -12,6 +13,7 @@ export function TabStrip({
   pane,
   fs,
   focused,
+  last,
   canSplit,
   view,
   onSelect,
@@ -23,6 +25,8 @@ export function TabStrip({
   pane: Pane;
   fs: FileSystem;
   focused: boolean;
+  /** Whether this is the rightmost pane, and so the window's top corner. */
+  last: boolean;
   /** False once a second pane exists, which turns the button into a ✕. */
   canSplit: boolean;
   /** How this pane's file is shown; null when it holds nothing with text. */
@@ -81,6 +85,26 @@ export function TabStrip({
           ✕
         </button>
       )}
+      {/* Only the rightmost strip: the version is the app's, not a pane's, and
+          a split would otherwise show it twice. */}
+      {last ? <VersionTag /> : null}
     </div>
+  );
+}
+
+/**
+ * The build number, in the corner.
+ *
+ * Deliberately inert and dim — it is metadata, not a control, and the one
+ * time anyone needs it (checking whether a phone is running the current
+ * deploy) they will be looking for it rather than noticing it. Rendered here
+ * and in the mobile topbar, the two places this app puts its upper-right
+ * affordances, so it lands in the window's top corner either way.
+ */
+export function VersionTag() {
+  return (
+    <span className="app-version" title={versionTitle()}>
+      {versionLabel()}
+    </span>
   );
 }

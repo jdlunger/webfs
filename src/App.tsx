@@ -15,7 +15,7 @@ import {
 } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor, ViewToggle, type EditorView } from "./Editor";
-import { TabStrip } from "./TabStrip";
+import { TabStrip, VersionTag } from "./TabStrip";
 import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
 import {
   type PaneLayout,
@@ -519,6 +519,7 @@ export function App() {
             onToggle={() => toggleView(selectedFile.id)}
           />
         ) : null}
+        <VersionTag />
       </div>
       <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />
       <Sidebar
@@ -555,6 +556,7 @@ export function App() {
                 pane={pane}
                 fs={fs}
                 focused={layout.focused === paneIndex}
+                last={paneIndex === layout.panes.length - 1}
                 canSplit={layout.panes.length < MAX_PANES}
                 view={viewOf(file)}
                 onSelect={id => setLayout(prev => openFile(prev, id))}

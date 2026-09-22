@@ -275,6 +275,20 @@ body {
   color: #fff;
 }
 
+/* Metadata, not a control: dim, inert, and out of the way of the buttons it
+   sits beside. Tabular figures so the number doesn't shuffle as it grows. */
+.app-version {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: #555;
+  flex-shrink: 0;
+  user-select: none;
+  cursor: default;
+}
+
 .editor-empty {
   align-items: center;
   justify-content: center;
@@ -958,6 +972,11 @@ body {
   .sync-connect {
     padding: 12px 10px;
     font-size: 14px;
+  }
+
+  .app-version {
+    font-size: 11px;
+    padding: 0 4px 0 8px;
   }
 
   .modal-actions button {

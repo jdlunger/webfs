@@ -19,6 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version in the app's corner is `git rev-list --count HEAD`,
+          # and the default shallow checkout has one commit to count. Without
+          # this the number would reset to 1 on every deploy — build.ts
+          # refuses to publish a number it can't trust, so the app would say
+          # "dev" instead of lying, but this is what keeps it honest.
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
