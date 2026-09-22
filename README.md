@@ -41,7 +41,15 @@ they were — editing a note doesn't rewrite them.
 
 An embed names a file without saying where it is. It's looked for beside the
 note first, and then in a `Media/` folder at the top level, which is where
-Obsidian keeps attachments by default.
+Obsidian keeps attachments by default. Links in double brackets
+(`[[Another Note]]`) aren't followed yet, but they're left exactly as written.
+
+More generally, a note is only ever changed where you typed. The editor works
+on a parsed document and would otherwise write the whole file back in its own
+style — retabbing lists, swapping `-` bullets for `*`, escaping `#tags` —
+every time you touched a note. Instead your file keeps its own formatting, and
+only the lines you actually edit are rewritten. Opening a note doesn't change
+it at all.
 
 ## Tests
 

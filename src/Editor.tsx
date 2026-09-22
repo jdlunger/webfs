@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
-import { editorViewOptionsCtx } from "@milkdown/kit/core";
+import { editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
 import { $node, $remark } from "@milkdown/kit/utils";
 import { segmentsOf } from "./fs";
 import { createFile, readBytes, writeFile } from "./storage";
 import { ASSET_DIR, assetCandidates, assetName, isAbsoluteUrl, mimeOf } from "./assets";
+import { preserveUnchanged } from "./preserve";
 import {
   WIKI_IMAGE,
+  WIKI_LINK,
   expandWikiImages,
+  unescapeTags,
   wikiImageLayout,
   wikiImageMarkdown,
   wikiImageTarget,
+  wikiLinkMarkdown,
   type MarkdownNode,
 } from "./wikilinks";
 // Import the common feature styles individually rather than the
@@ -187,9 +191,48 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
     }));
 
     /**
-     * Both halves of the syntax: the embeds are cut out of the text remark
-     * parsed them into, and a stringify handler puts them back. remark has no
-     * idea what a `wikiImage` is otherwise and refuses to serialize one.
+     * A link, or an embed of something that isn't an image: shown as the text
+     * it already reads as, and written back exactly as it was found.
+     */
+    const wikiLinkNode = $node(WIKI_LINK, () => ({
+      inline: true,
+      group: "inline",
+      atom: true,
+      attrs: { source: { default: "" } },
+      parseDOM: [
+        {
+          tag: "span[data-wiki-link]",
+          getAttrs: (dom: HTMLElement | string) => ({
+            source: typeof dom === "string" ? "" : dom.dataset.wikiLink ?? "",
+          }),
+        },
+      ],
+      toDOM: (node: { attrs: Record<string, unknown> }) => {
+        const source = String(node.attrs.source ?? "");
+        const span = document.createElement("span");
+        span.className = "wiki-link";
+        span.dataset.wikiLink = source;
+        span.textContent = source;
+        return span;
+      },
+      parseMarkdown: {
+        match: (node: MarkdownNode) => node.type === WIKI_LINK,
+        runner: (state, node, type) => {
+          state.addNode(type, { source: String(node.source ?? "") });
+        },
+      },
+      toMarkdown: {
+        match: node => node.type.name === WIKI_LINK,
+        runner: (state, node) => {
+          state.addNode(WIKI_LINK, undefined, undefined, { source: String(node.attrs.source ?? "") });
+        },
+      },
+    }));
+
+    /**
+     * Both halves of the syntax: the embeds and links are cut out of the text
+     * remark parsed them into, and stringify handlers put them back. remark
+     * has no idea what either node is otherwise and refuses to serialize one.
      */
     const wikiImageRemark = $remark(WIKI_IMAGE, () => function remarkWikiImage(this: {
       data: () => { toMarkdownExtensions?: unknown[] };
@@ -199,12 +242,25 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
       extensions.push({
         handlers: {
           [WIKI_IMAGE]: (node: MarkdownNode) => wikiImageMarkdown(String(node.raw ?? "")),
+          [WIKI_LINK]: (node: MarkdownNode) => wikiLinkMarkdown(String(node.source ?? "")),
         },
       });
       return (tree: unknown) => {
         expandWikiImages(tree as MarkdownNode);
       };
     });
+
+    /**
+     * The file as it is on disk, and what the serializer makes of it.
+     *
+     * Milkdown re-serializes the whole document on every change, so saving its
+     * output verbatim rewrites every convention it has an opinion about —
+     * tabs, bullet characters, escaping — across the whole file at once. These
+     * two let `preserveUnchanged` tell the user's edit apart from that, and
+     * hand the rest of the file back untouched. See preserve.ts.
+     */
+    let stored = file.content ?? "";
+    let baseline: string | null = null;
 
     const crepe = new Crepe({
       root: containerRef.current,
@@ -225,16 +281,81 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
     // accessory bar) follows these standard attributes on the editable
     // element; the rest of that bar (line-navigation arrows, "Done") is
     // drawn by the OS and isn't something a page can turn off.
+    /** What the editor would make of a text: parsed, then serialized again. */
+    const roundTrip = (text: string): string | null => {
+      try {
+        return crepe.editor.action(ctx => ctx.get(serializerCtx)(ctx.get(parserCtx)(text)));
+      } catch (err) {
+        console.error("Failed to verify preserved markdown", err);
+        return null;
+      }
+    };
+
     crepe.editor.config(ctx => {
       ctx.update(editorViewOptionsCtx, prev => ({
         ...prev,
         attributes: { spellcheck: "false", autocorrect: "off", autocapitalize: "off" },
       }));
+      // What the serializer writes on a line the user actually edits. The rest
+      // of the file keeps its own conventions (see preserve.ts), so this only
+      // decides what new text looks like — `-` because that's what every other
+      // bullet in a vault written elsewhere uses, and an unescaped `#` because
+      // `\#classnotes` is not a tag.
+      ctx.update(remarkStringifyOptionsCtx, prev => ({
+        ...prev,
+        bullet: "-" as const,
+        handlers: {
+          ...prev.handlers,
+          // Milkdown's own text handler, with the tag put back. The first line
+          // is theirs: a run of trailing whitespace is passed through rather
+          // than escaped.
+          text: ((node, _parent, state, info) => {
+            const value = String((node as { value?: unknown }).value ?? "");
+            if (/^[^*_\\]*\s+$/.test(value)) return value;
+            return unescapeTags(state.safe(value, { ...info, encode: [] }));
+          }) as NonNullable<typeof prev.handlers>["text"],
+        },
+      }));
     });
-    crepe.editor.use(wikiImageRemark).use(wikiImageNode);
+    crepe.editor.use(wikiImageRemark).use(wikiImageNode).use(wikiLinkNode);
     crepe.on(listener => {
-      listener.markdownUpdated((_ctx, markdown, prevMarkdown) => {
-        if (markdown !== prevMarkdown) onChangeRef.current(file.id, markdown);
+      listener.markdownUpdated((_ctx, markdown) => {
+        // What the file itself says, in the serializer's dialect. Worked out
+        // here rather than when the editor was built because Crepe changes the
+        // document once on its own after mounting, and a baseline captured
+        // before that lands would read that change as the user's.
+        baseline ??= roundTrip(stored) ?? markdown;
+
+        // Crepe puts an empty paragraph at the end of the document when it
+        // mounts, so the first change it reports is one nobody made — and
+        // before this was handled, merely opening a note rewrote it and
+        // offered the whole file to the next sync as the user's work. An empty
+        // paragraph is not content, so trailing blank lines don't count as a
+        // difference here or in the check below.
+        if (sameText(markdown, baseline)) {
+          baseline = markdown;
+          return;
+        }
+
+        // The first reconstruction the editor reads back as exactly what it
+        // just said. One that says anything else — a dropped blank line that
+        // ran two paragraphs together, an alignment that went wrong — is
+        // discarded rather than saved, and the list ends with the editor's own
+        // text, so this can cost the preservation but never the edit.
+        let text = markdown;
+        for (const candidate of preserveUnchanged(stored, baseline, markdown)) {
+          if (candidate === markdown) break;
+          const back = roundTrip(candidate);
+          if (back !== null && sameText(back, markdown)) {
+            text = candidate;
+            break;
+          }
+        }
+
+        baseline = markdown;
+        if (text === stored) return; // Nothing for the file to say differently.
+        stored = text;
+        onChangeRef.current(file.id, text);
       });
     });
     const ready = crepe.create();
@@ -251,6 +372,15 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
 
   return <div className="milkdown-root" ref={containerRef} />;
 }
+
+/**
+ * Whether two markdown texts say the same thing.
+ *
+ * Trailing blank lines are not content — Crepe keeps an empty paragraph at the
+ * end of every document so there's somewhere to click below the last block,
+ * and it shows up in the serializer's output as one.
+ */
+const sameText = (a: string, b: string) => a.trimEnd() === b.trimEnd();
 
 /**
  * A file the editor must not open.
