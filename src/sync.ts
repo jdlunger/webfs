@@ -104,6 +104,111 @@ export interface SyncSummary {
 }
 
 /**
+ * Where a sync has got to, for the status strip.
+ *
+ * A pass is the fixed sequence of stages below. Within one, `done`/`total`
+ * count the files it works through (`0`/`0` when there is nothing countable)
+ * and `path` names the one it is on. A stage reports when a step *starts*, so
+ * `path` is what is happening now and `done` is what is already behind it.
+ */
+export type SyncStage =
+  | "reading"
+  | "hashing"
+  | "listing"
+  | "downloading"
+  | "merging"
+  | "keeping"
+  | "deleting"
+  | "uploading"
+  | "committing";
+
+export interface SyncProgress {
+  stage: SyncStage;
+  /** The file this step is about, where a step is about one file. */
+  path?: string;
+  done: number;
+  total: number;
+}
+
+export type OnSyncProgress = (progress: SyncProgress) => void;
+
+/**
+ * The stages in the order they run, each with a share of the bar.
+ *
+ * The shares are a guess, and deliberately so: how long a pass spends
+ * uploading depends entirely on what changed, and nothing here can know that
+ * before it starts. The percentage is a sense of movement, not an estimate of
+ * time. What it does promise is that it only ever goes up — stages are
+ * emitted in this order and each one's counter only climbs, which is why
+ * keeping both copies of a file has a stage of its own rather than sharing
+ * "merging": a merge that turns out to be impossible lands there *after* the
+ * merges, and a shared counter would visibly go backwards.
+ *
+ * A pass that finds nothing to do stops partway through (there is no commit
+ * to make), so the bar jumps from wherever it got to straight to the result
+ * line. That is honest: it really did finish early.
+ */
+const STAGE_SHARE: ReadonlyArray<readonly [SyncStage, number]> = [
+  ["reading", 8],
+  ["hashing", 12],
+  ["listing", 10],
+  ["downloading", 25],
+  ["merging", 10],
+  ["keeping", 2],
+  ["deleting", 3],
+  ["uploading", 20],
+  ["committing", 10],
+];
+
+/** 0–100 across the whole pass, from a stage and its place within it. */
+export function progressPercent({ stage, done, total }: SyncProgress): number {
+  let before = 0;
+  for (const [candidate, share] of STAGE_SHARE) {
+    if (candidate === stage) {
+      const fraction = total > 0 ? Math.min(done / total, 1) : 0;
+      return Math.round(before + share * fraction);
+    }
+    before += share;
+  }
+  return before;
+}
+
+/**
+ * The status line's "what's happening right now".
+ *
+ * The file is named by its last segment, not its full path: this line is
+ * glanced at rather than read, it is replaced a moment later, and the sidebar
+ * is narrow enough that a long path would be clipped to exactly the half that
+ * doesn't identify the file. The full path goes in the element's `title`.
+ * (The commit title does the opposite, for the opposite reason — it's a
+ * record, and it lasts.)
+ */
+export function describeProgress({ stage, path, done, total }: SyncProgress): string {
+  const name = path === undefined ? "" : path.slice(path.lastIndexOf("/") + 1);
+  const of = total > 1 ? ` (${Math.min(done + 1, total)}/${total})` : "";
+  switch (stage) {
+    case "reading":
+      return "Reading local files…";
+    case "hashing":
+      return total > 0 ? `Checking local files (${done}/${total})` : "Checking local files…";
+    case "listing":
+      return "Reading the branch…";
+    case "downloading":
+      return `Downloading ${name}${of}`;
+    case "merging":
+      return `Merging ${name}${of}`;
+    case "keeping":
+      return `Keeping both copies of ${name}${of}`;
+    case "deleting":
+      return `Deleting ${name}${of}`;
+    case "uploading":
+      return total > 1 ? `Uploading ${done}/${total} files` : "Uploading 1 file";
+    case "committing":
+      return "Committing…";
+  }
+}
+
+/**
  * Bytes, not text.
  *
  * Text is the common case, but an image pasted into a note is a real file in
@@ -194,11 +299,22 @@ export interface SyncResult {
  * The commit title is built here rather than passed in, because only this
  * function knows which files the push actually changes.
  */
-export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState): Promise<SyncResult> {
+export async function syncOnce(
+  local: LocalFs,
+  remote: Remote,
+  state: SyncState,
+  onProgress: OnSyncProgress = () => {},
+): Promise<SyncResult> {
+  onProgress({ stage: "reading", done: 0, total: 0 });
   const localBytes = await local.read();
   const localSha: ShaMap = {};
-  for (const [path, content] of Object.entries(localBytes)) localSha[path] = await gitBlobSha(content);
+  const localFiles = Object.entries(localBytes);
+  for (const [index, [path, content]] of localFiles.entries()) {
+    onProgress({ stage: "hashing", path, done: index, total: localFiles.length });
+    localSha[path] = await gitBlobSha(content);
+  }
 
+  onProgress({ stage: "listing", done: 0, total: 0 });
   const tree = await remote.readTree();
   const remoteSha: ShaMap = {};
   const carried: CommitEntry[] = [];
@@ -243,12 +359,14 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     written.push({ path, content: decodeText(content) });
   };
 
-  for (const path of plan.pull) {
+  for (const [index, path] of plan.pull.entries()) {
+    onProgress({ stage: "downloading", path, done: index, total: plan.pull.length });
     await writeLocal(path, await remote.readBlobBytes(remoteSha[path]!));
     summary.pulled.push(path);
   }
 
-  for (const path of plan.merge) {
+  for (const [index, path] of plan.merge.entries()) {
+    onProgress({ stage: "merging", path, done: index, total: plan.merge.length });
     const theirs = await remote.readBlobBytes(remoteSha[path]!);
     // The base *text*, not just its sha: it was pushed at the last sync, so
     // the blob is still reachable in the repo. If it isn't (history rewritten,
@@ -268,7 +386,8 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     summary.merged.push(path);
   }
 
-  for (const path of conflicts) {
+  for (const [index, path] of conflicts.entries()) {
+    onProgress({ stage: "keeping", path, done: index, total: conflicts.length });
     // No shared history, or nothing mergeable: there's no honest way to merge
     // two files that just happen to share a name, and silently preferring one
     // side loses work that exists nowhere else. Both are kept; the push then
@@ -278,7 +397,8 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     summary.conflicted.push({ path, keptAs });
   }
 
-  for (const path of plan.deleteLocal) {
+  for (const [index, path] of plan.deleteLocal.entries()) {
+    onProgress({ stage: "deleting", path, done: index, total: plan.deleteLocal.length });
     await local.remove(path);
     delete finalBytes[path];
     removed.push(path);
@@ -325,7 +445,14 @@ export async function syncOnce(local: LocalFs, remote: Remote, state: SyncState)
     ...Object.keys(remoteSha).filter(path => finalSha[path] === undefined),
   ];
 
-  await remote.commit(entries, commitTitle(changed), tree.commitSha);
+  // Only entries carrying content are uploaded; the rest name a blob the
+  // branch already has. That's the count worth showing, and on a note with a
+  // photo in it, it's where the seconds go.
+  const uploads = entries.filter(entry => "content" in entry).length;
+  onProgress(uploads === 0 ? { stage: "committing", done: 0, total: 0 } : { stage: "uploading", done: 0, total: uploads });
+  await remote.commit(entries, commitTitle(changed), tree.commitSha, (done, total) =>
+    onProgress(done === total ? { stage: "committing", done: 0, total: 0 } : { stage: "uploading", done, total }),
+  );
   return { state: { files: finalSha }, summary, written, removed };
 }
 

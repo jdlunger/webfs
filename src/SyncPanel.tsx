@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { GitHubRemote } from "./github";
+import { describeProgress, progressPercent, type SyncProgress } from "./sync";
 import type { SyncConfig } from "./syncConfig";
 import type { GitHubSync } from "./useGitHubSync";
 
@@ -16,6 +17,14 @@ export function SyncPanel({ sync }: { sync: GitHubSync }) {
 
   return (
     <div className="sync-bar">
+      {/* A hairline across the top of the strip rather than a bar on a line of
+          its own: the strip sits at the foot of the sidebar and would
+          otherwise grow and shrink every time a sync started. */}
+      {status.phase === "syncing" && (
+        <div className="sync-progress" aria-hidden="true">
+          <div className="sync-progress-fill" style={{ width: `${status.progress ? progressPercent(status.progress) : 0}%` }} />
+        </div>
+      )}
       {config ? (
         <>
           <div className="sync-info">
@@ -31,7 +40,12 @@ export function SyncPanel({ sync }: { sync: GitHubSync }) {
               {config.owner}/{config.repo}
               <span className="sync-branch">{config.branch}</span>
             </a>
-            <SyncStatusLine phase={status.phase} message={status.message} lastSyncedAt={status.lastSyncedAt} />
+            <SyncStatusLine
+              phase={status.phase}
+              message={status.message}
+              lastSyncedAt={status.lastSyncedAt}
+              progress={status.progress}
+            />
           </div>
           <button className="sync-settings" title="GitHub sync settings" onClick={() => setEditing(true)}>
             ⚙
@@ -66,7 +80,17 @@ export function branchUrl({ owner, repo, branch }: Pick<SyncConfig, "owner" | "r
 }
 
 /** "Synced 2m ago" decays on its own, so it can't sit there claiming "just now". */
-function SyncStatusLine({ phase, message, lastSyncedAt }: { phase: string; message: string; lastSyncedAt: number | null }) {
+function SyncStatusLine({
+  phase,
+  message,
+  lastSyncedAt,
+  progress,
+}: {
+  phase: string;
+  message: string;
+  lastSyncedAt: number | null;
+  progress: SyncProgress | null;
+}) {
   const [, setTick] = useState(0);
   useEffect(() => {
     if (lastSyncedAt === null) return;
@@ -81,7 +105,18 @@ function SyncStatusLine({ phase, message, lastSyncedAt }: { phase: string; messa
       </span>
     );
   }
-  if (phase === "syncing") return <span className="sync-status">Syncing…</span>;
+  if (phase === "syncing") {
+    // A sync is usually over before this says anything interesting, which is
+    // the point: when it isn't — a first pull of someone's whole notes repo, a
+    // photo going up — the line says which file and how far in, instead of an
+    // ellipsis that gives no way to tell slow from stuck.
+    if (progress === null) return <span className="sync-status">Syncing…</span>;
+    return (
+      <span className="sync-status" title={progress.path ?? describeProgress(progress)}>
+        {describeProgress(progress)} · {progressPercent(progress)}%
+      </span>
+    );
+  }
   if (lastSyncedAt === null) return <span className="sync-status">{message || "Not synced yet"}</span>;
   return (
     <span className="sync-status" title={message}>

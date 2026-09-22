@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitHubError, GitHubRemote, webCryptoAvailable } from "./github";
-import { describeSummary, opfsLocalFs, syncOnce, type SyncResult } from "./sync";
+import { describeSummary, opfsLocalFs, syncOnce, type SyncProgress, type SyncResult } from "./sync";
 import { clearConfig, clearState, loadConfig, loadState, saveConfig, saveState, type SyncConfig } from "./syncConfig";
 
 /** How long after the last local edit to push. */
@@ -24,6 +24,15 @@ const SETTLE_MS = 4_000;
 const POLL_MS = 60_000;
 /** One retry is enough: a 422 means the branch moved, so re-read and redo. */
 const RETRIES = 1;
+/**
+ * How often progress is allowed to reach React.
+ *
+ * `syncOnce` reports per file, and hashing a store of any size fires one of
+ * those for each one — a render apiece would cost more than the sync does. A
+ * change of stage always lands immediately, so the line never falls behind
+ * what's actually happening by more than this.
+ */
+const PROGRESS_MS = 120;
 
 export type SyncPhase = "off" | "idle" | "syncing" | "error";
 
@@ -32,6 +41,8 @@ export interface SyncStatus {
   /** What the last sync did, or what went wrong. */
   message: string;
   lastSyncedAt: number | null;
+  /** Where the running sync has got to; null unless one is running. */
+  progress: SyncProgress | null;
 }
 
 export interface GitHubSync {
@@ -68,6 +79,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
     phase: loadConfig() ? "idle" : "off",
     message: "",
     lastSyncedAt: null,
+    progress: null,
   }));
 
   // Timers and listeners are registered once but need today's values.
@@ -85,12 +97,28 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
     if (!current || running.current) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     if (!webCryptoAvailable()) {
-      setStatus({ phase: "error", message: "Sync needs crypto.subtle, which this browser isn't exposing here.", lastSyncedAt: null });
+      setStatus({
+        phase: "error",
+        message: "Sync needs crypto.subtle, which this browser isn't exposing here.",
+        lastSyncedAt: null,
+        progress: null,
+      });
       return;
     }
 
     running.current = true;
-    setStatus(prev => ({ ...prev, phase: "syncing", message: "Syncing…" }));
+    setStatus(prev => ({ ...prev, phase: "syncing", message: "Syncing…", progress: null }));
+
+    let lastStage: string | null = null;
+    let lastAt = 0;
+    const onProgress = (progress: SyncProgress) => {
+      const now = Date.now();
+      if (progress.stage === lastStage && now - lastAt < PROGRESS_MS) return;
+      lastStage = progress.stage;
+      lastAt = now;
+      setStatus(prev => ({ ...prev, progress }));
+    };
+
     try {
       // Anything still queued in the editor belongs in this sync, not the next.
       await flushRef.current();
@@ -100,7 +128,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
         let lastError: unknown;
         for (let attempt = 0; attempt <= RETRIES; attempt++) {
           try {
-            return await syncOnce(opfsLocalFs, remote, loadState(current));
+            return await syncOnce(opfsLocalFs, remote, loadState(current), onProgress);
           } catch (err) {
             // 422 on the ref update means another writer moved the branch
             // between our read and our push. Everything is re-read on the way
@@ -114,18 +142,19 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
 
       // Another tab is mid-sync; it will do the work and write the same state.
       if (outcome === "busy") {
-        setStatus(prev => ({ ...prev, phase: "idle" }));
+        setStatus(prev => ({ ...prev, phase: "idle", progress: null }));
         return;
       }
 
       saveState(current, outcome.state);
       if (outcome.written.length > 0 || outcome.removed.length > 0) onLocalChangesRef.current(outcome);
-      setStatus({ phase: "idle", message: describeSummary(outcome.summary), lastSyncedAt: Date.now() });
+      setStatus({ phase: "idle", message: describeSummary(outcome.summary), lastSyncedAt: Date.now(), progress: null });
     } catch (err) {
       setStatus(prev => ({
         phase: "error",
         message: err instanceof Error ? err.message : "Sync failed.",
         lastSyncedAt: prev.lastSyncedAt,
+        progress: null,
       }));
     } finally {
       running.current = false;
@@ -150,7 +179,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
     saveConfig(next);
     setConfig(next);
     configRef.current = next;
-    setStatus({ phase: "idle", message: "", lastSyncedAt: null });
+    setStatus({ phase: "idle", message: "", lastSyncedAt: null, progress: null });
     void run();
   }, [run]);
 
@@ -160,7 +189,7 @@ export function useGitHubSync({ flush, onLocalChanges }: GitHubSyncOptions): Git
     clearConfig();
     setConfig(null);
     configRef.current = null;
-    setStatus({ phase: "off", message: "", lastSyncedAt: null });
+    setStatus({ phase: "off", message: "", lastSyncedAt: null, progress: null });
   }, []);
 
   // First sync after load, so a device that was away catches up before it's

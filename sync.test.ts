@@ -9,8 +9,19 @@
  * pointing a browser at a real repository.
  */
 import { test, expect } from "bun:test";
-import { commitTitle, conflictCopyPath, planSync, syncOnce, type LocalFs, type ShaMap, type SyncState } from "./src/sync";
-import { decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteTree } from "./src/github";
+import {
+  commitTitle,
+  conflictCopyPath,
+  describeProgress,
+  planSync,
+  progressPercent,
+  syncOnce,
+  type LocalFs,
+  type ShaMap,
+  type SyncProgress,
+  type SyncState,
+} from "./src/sync";
+import { decodeText, gitBlobSha, type CommitEntry, type Remote, type RemoteTree, type UploadProgress } from "./src/github";
 import type { Bytes } from "./src/storage";
 
 const enc = (text: string): Bytes => new TextEncoder().encode(text);
@@ -161,7 +172,12 @@ class FakeRemote implements Remote {
     return decodeText(await this.readBlobBytes(sha));
   }
 
-  async commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string> {
+  async commit(entries: CommitEntry[], message: string, parent: string | null, onUpload?: UploadProgress): Promise<string> {
+    // Only entries carrying content are uploaded by the real client, so only
+    // those are counted here — a fake that reported every entry would let a
+    // wrong count in sync.ts pass.
+    const uploads = entries.filter(entry => !("sha" in entry)).length;
+    let uploaded = 0;
     const files: Record<string, string> = {};
     const raw: Record<string, Bytes> = {};
     const snapshot: Record<string, Bytes> = {};
@@ -174,6 +190,7 @@ class FakeRemote implements Remote {
       else files[entry.path] = text;
       snapshot[entry.path] = bytes;
       this.blobs.set(await gitBlobSha(bytes), bytes);
+      if (!("sha" in entry)) onUpload?.(++uploaded, uploads);
     }
     this.files = files;
     this.rawFiles = raw;
@@ -441,4 +458,102 @@ test("a deletion is a change worth naming in the title", async () => {
   await syncOnce(local, remote, base);
 
   expect(remote.commits.at(-1)!.message).toContain("b.md");
+});
+
+// --- progress ----------------------------------------------------------------
+
+/** The stages a pass reported, in order, with repeats collapsed. */
+const stagesOf = (events: SyncProgress[]) => events.map(event => event.stage).filter((stage, i, all) => stage !== all[i - 1]);
+
+test("a pass reports each stage in turn, and the bar only goes forwards", async () => {
+  const local = fakeLocal({ "mine.md": "local only", "gone.md": "deleted there" });
+  const remote = new FakeRemote({ "gone.md": "deleted there", "theirs.md": "remote only" });
+  // A base that has gone.md on both sides untouched is what makes its absence
+  // from a later local read a deletion rather than a file that never existed.
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+  delete remote.files["gone.md"];
+  local.files["mine.md"] = "local only, edited";
+
+  const events: SyncProgress[] = [];
+  await syncOnce(local, remote, base, event => events.push(event));
+
+  expect(stagesOf(events)).toEqual(["reading", "hashing", "listing", "deleting", "uploading", "committing"]);
+  const percents = events.map(progressPercent);
+  expect(percents).toEqual([...percents].sort((a, b) => a - b));
+  expect(percents[0]).toBe(0);
+  expect(percents.at(-1)).toBe(90);
+});
+
+test("downloading, merging and keeping both copies report in that order", async () => {
+  // merging and keeping have to stay separate stages: an unmergeable merge
+  // lands in the keep-both loop *after* the merges, so sharing one counter
+  // would send the bar backwards.
+  const local = fakeLocal({ "both.md": "base\n" });
+  const remote = new FakeRemote({ "both.md": "base\n" });
+  const base = (await syncOnce(local, remote, EMPTY)).state;
+
+  local.files["both.md"] = "base\nmine\n";
+  remote.files["both.md"] = "theirs\nbase\n";
+  remote.files["pull.md"] = "new over there";
+  // Written on both sides since the base, so the two have no shared history.
+  local.files["clash.md"] = "written here";
+  remote.files["clash.md"] = "written there, separately";
+
+  const events: SyncProgress[] = [];
+  await syncOnce(local, remote, base, event => events.push(event));
+
+  expect(stagesOf(events)).toEqual([
+    "reading",
+    "hashing",
+    "listing",
+    "downloading",
+    "merging",
+    "keeping",
+    "uploading",
+    "committing",
+  ]);
+  expect(events.find(event => event.stage === "downloading")?.path).toBe("pull.md");
+  expect(events.find(event => event.stage === "keeping")?.path).toBe("clash.md");
+});
+
+test("uploads are counted as they land, and only new blobs count", async () => {
+  const local = fakeLocal({ "kept.md": "unchanged", "new.md": "fresh" });
+  const remote = new FakeRemote({ "kept.md": "unchanged" });
+
+  const events: SyncProgress[] = [];
+  await syncOnce(local, remote, EMPTY, event => events.push(event));
+
+  // kept.md is already on the branch, so the push references it by sha and
+  // only new.md is actually uploaded.
+  const uploads = events.filter(event => event.stage === "uploading");
+  expect(uploads).toEqual([{ stage: "uploading", done: 0, total: 1 }]);
+  expect(events.at(-1)).toEqual({ stage: "committing", done: 0, total: 0 });
+});
+
+test("a pass with nothing to do stops before the push", async () => {
+  const local = fakeLocal({ "a.md": "text" });
+  const remote = new FakeRemote({ "a.md": "text" });
+
+  const events: SyncProgress[] = [];
+  await syncOnce(local, remote, EMPTY, event => events.push(event));
+
+  expect(stagesOf(events)).toEqual(["reading", "hashing", "listing"]);
+});
+
+test("the percentage spans the pass and is clamped to its stage's share", () => {
+  expect(progressPercent({ stage: "reading", done: 0, total: 0 })).toBe(0);
+  expect(progressPercent({ stage: "hashing", done: 5, total: 10 })).toBe(14); // 8 + half of 12
+  expect(progressPercent({ stage: "committing", done: 0, total: 0 })).toBe(90);
+  // A stage that somehow overshoots its own total can't push past its share.
+  expect(progressPercent({ stage: "hashing", done: 99, total: 10 })).toBe(20);
+});
+
+test("the status line names the file, not the path it lives at", () => {
+  // The strip is a sidebar wide; a full path would be clipped to exactly the
+  // half that doesn't say which file it is.
+  expect(describeProgress({ stage: "downloading", path: "Notes/trips/todo.md", done: 1, total: 3 })).toBe("Downloading todo.md (2/3)");
+  expect(describeProgress({ stage: "downloading", path: "todo.md", done: 0, total: 1 })).toBe("Downloading todo.md");
+  expect(describeProgress({ stage: "hashing", path: "a.md", done: 2, total: 9 })).toBe("Checking local files (2/9)");
+  expect(describeProgress({ stage: "uploading", done: 1, total: 4 })).toBe("Uploading 1/4 files");
+  expect(describeProgress({ stage: "committing", done: 0, total: 0 })).toBe("Committing…");
 });

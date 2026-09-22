@@ -566,6 +566,29 @@ body {
   background: #161616;
   flex-shrink: 0;
   min-height: 44px;
+  /* Anchors the progress hairline, which overlays the top border rather than
+     taking a line of its own — a strip that changed height whenever a sync
+     started would shove the file tree around every minute. */
+  position: relative;
+}
+
+.sync-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #2c2c2c;
+  overflow: hidden;
+}
+
+.sync-progress-fill {
+  height: 100%;
+  background: #5b9dd9;
+  /* Progress arrives in steps, one per file; the transition is what turns
+     those into something that reads as movement. Kept short so the bar is
+     never far behind the line of text below it. */
+  transition: width 150ms linear;
 }
 
 .sync-info {
@@ -837,6 +860,10 @@ body {
   .sync-bar {
     padding: 10px 14px;
     min-height: 56px;
+  }
+
+  .sync-progress {
+    height: 3px;
   }
 
   .sync-repo {

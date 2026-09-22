@@ -60,6 +60,12 @@ export type CommitEntry =
   | { path: string; mode: string; sha: string }
   | { path: string; mode: string; content: string | Bytes };
 
+/**
+ * Called as each new blob lands, with how many of them there are. Entries that
+ * name a blob the branch already has are never uploaded, so they don't count.
+ */
+export type UploadProgress = (done: number, total: number) => void;
+
 export interface Remote {
   readTree(): Promise<RemoteTree>;
   /** The blob's text, or null if it isn't UTF-8 text (see `decodeText`). */
@@ -67,7 +73,7 @@ export interface Remote {
   /** The blob's bytes, whatever they are — images included. */
   readBlobBytes(sha: string): Promise<Bytes>;
   /** Writes `entries` as the branch's complete new tree. Returns the commit sha. */
-  commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string>;
+  commit(entries: CommitEntry[], message: string, parent: string | null, onUpload?: UploadProgress): Promise<string>;
 }
 
 // --- encoding ---------------------------------------------------------------
@@ -274,7 +280,7 @@ export class GitHubRemote implements Remote {
     return decodeText(await this.readBlobBytes(sha));
   }
 
-  async commit(entries: CommitEntry[], message: string, parent: string | null): Promise<string> {
+  async commit(entries: CommitEntry[], message: string, parent: string | null, onUpload?: UploadProgress): Promise<string> {
     // A tree must have entries; more to the point, pushing an empty one would
     // wipe the repository, which is never what a sync of an empty browser
     // store should mean. sync.ts refuses before getting here, too.
@@ -294,12 +300,24 @@ export class GitHubRemote implements Remote {
       if (entries.length === 1) return base;
     }
 
+    // The uploads are what a push actually spends its time on, so they're
+    // counted as they land. They go up in parallel and finish out of order,
+    // which is why the count is all that's reported and not which file it was.
+    const uploads = entries.filter(entry => !("sha" in entry)).length;
+    let uploaded = 0;
+    const blobSha = async (entry: CommitEntry): Promise<string> => {
+      if ("sha" in entry) return entry.sha;
+      const sha = await this.createBlob(entry.content);
+      onUpload?.(++uploaded, uploads);
+      return sha;
+    };
+
     const tree = await Promise.all(
       entries.map(async entry => ({
         path: entry.path,
         mode: entry.mode,
         type: "blob" as const,
-        sha: "sha" in entry ? entry.sha : await this.createBlob(entry.content),
+        sha: await blobSha(entry),
       })),
     );
 

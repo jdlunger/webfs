@@ -347,6 +347,27 @@ and `SyncPanel.tsx` (the strip at the foot of the sidebar).
   recognised; the path is full, because two `todo.md`s in different folders
   are ordinary here. Deletions count as changes worth naming. Names are
   sorted, so the same set of changes always titles the same way.
+- **The status strip says what a sync is doing, not just that it is.**
+  `syncOnce` takes an `onProgress` callback and reports a stage per step —
+  reading, hashing, listing, downloading, merging, keeping, deleting,
+  uploading, committing — with the file it's on and a count within the stage.
+  `progressPercent` turns that into one number using the fixed shares in
+  `STAGE_SHARE`. Three things that look arbitrary and aren't: the shares are a
+  guess (nothing can know before it starts how long a pass spends uploading)
+  so the percentage promises movement, not time; the stage *order* is what
+  makes the bar monotonic, which is why keeping-both has a stage of its own
+  rather than sharing "merging" — an unmergeable merge lands there afterwards
+  and a shared counter would run backwards; and a pass with nothing to do
+  stops after "listing", so the bar jumps to the result line from ~30%.
+  `describeProgress` names the file by its last segment (the strip is a
+  sidebar wide, and a clipped path shows the half that doesn't identify it),
+  with the full path in the `title` — the opposite of `commitTitle`, for the
+  opposite reason. The hook throttles these to `PROGRESS_MS` (120ms) per
+  stage, since hashing fires one per file and a render apiece would cost more
+  than the sync. Blob uploads are counted by `github.ts` as they land, not
+  which file — they go up in parallel and finish out of order. The bar itself
+  is absolutely positioned over the strip's top border (`.sync-progress`), so
+  the sidebar's footer doesn't change height every time a sync starts.
 - **Timing:** on load, 4s after edits settle, every 60s, on tab-visible and on
   `online`, plus the button. Auto-sync is a checkbox; the button always works.
 - **Keystrokes that land mid-sync are merged, not dropped.** A sync reads OPFS
