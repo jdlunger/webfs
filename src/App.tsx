@@ -13,6 +13,24 @@ import {
 } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor } from "./Editor";
+import { TabStrip } from "./TabStrip";
+import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
+import {
+  type PaneLayout,
+  MAX_PANES,
+  activeId as focusedFileId,
+  activeIds,
+  closePane,
+  closeTab,
+  focusPane,
+  openBeside,
+  openFile,
+  openIds as allOpenIds,
+  pruneMissing,
+  remapPaths,
+  singlePane,
+  splitPane,
+} from "./panes";
 import { BASE_PATH } from "./basePath";
 import { decodeText } from "./github";
 import { mergeText } from "./merge";
@@ -76,21 +94,33 @@ function pickInitialSelection(fs: FileSystem): string | null {
 export function App() {
   const [fs, setFs] = useState<FileSystem | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [layout, setLayout] = useState<PaneLayout>(() => singlePane(null));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /**
-   * Bumped only when content arrives from *outside* the editor, to remount it
-   * (Crepe is uncontrolled, so a remount is the one way to push content in).
-   * Local typing must never bump this or every keystroke would tear it down.
+   * Per file, bumped only when content arrives from *outside* that file's
+   * editor, to remount it (Crepe is uncontrolled, so a remount is the one way
+   * to push content in). Local typing must never bump this or every keystroke
+   * would tear the editor down. Keyed by id because two panes can be showing
+   * two different files, and a sync can land in either.
    */
-  const [externalEdit, setExternalEdit] = useState(0);
+  const [externalEdits, setExternalEdits] = useState<Record<string, number>>({});
+
+  // Tabs and the split view are a large-screen affordance; a phone keeps
+  // showing one file at a time, as it always has.
+  const wide = useMediaQuery(WIDE_SCREEN);
 
   // Latest values for listeners and timers registered once, which would
   // otherwise close over the first render's state.
   const fsRef = useRef<FileSystem | null>(null);
   fsRef.current = fs;
-  const selectedRef = useRef<string | null>(null);
-  selectedRef.current = selectedId;
+  const openRef = useRef<string[]>([]);
+  openRef.current = activeIds(layout);
+
+  /** Remounts a file's editor, if it's one of the files actually on screen. */
+  const bumpExternalEdit = useCallback((id: string) => {
+    if (!openRef.current.includes(id)) return;
+    setExternalEdits(prev => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  }, []);
 
   /**
    * Set once the sync hook exists, which is after the callbacks that want to
@@ -147,9 +177,9 @@ export function App() {
     }
   }, [flushWrite]);
 
-  /** Follows the selection when the node it points at is renamed or moved. */
-  const remapSelection = useCallback((from: string, to: string) => {
-    setSelectedId(prev => (prev === from ? to : prev?.startsWith(`${from}/`) ? to + prev.slice(from.length) : prev));
+  /** Follows every open tab when the node it points at is renamed or moved. */
+  const remapTabs = useCallback((from: string, to: string) => {
+    setLayout(prev => remapPaths(prev, from, to));
   }, []);
 
   /** Runs a structural change, then re-reads the tree and tells other tabs. */
@@ -208,7 +238,7 @@ export function App() {
           setFs(prev => (prev ? updateFileContent(prev, id, next) : prev));
           // Crepe only reads its content at construction, so a file open
           // right now has to be remounted to show what arrived.
-          if (id === selectedRef.current) setExternalEdit(n => n + 1);
+          bumpExternalEdit(id);
         }
         // Whatever the merge produced still has to reach disk and the repo.
         if (raced && next !== content) scheduleWrite(id, next);
@@ -220,12 +250,13 @@ export function App() {
         if (queued) clearTimeout(queued.timer);
         pending.current.delete(id);
         baseContent.current.delete(id);
-        if (id === selectedRef.current) setSelectedId(null);
+        // The tab it may be open in is closed by the prune below, once the
+        // refreshed tree shows the file is gone.
       }
       void refreshTree();
       announce({ kind: "tree" });
     },
-    [refreshTree, scheduleWrite],
+    [bumpExternalEdit, refreshTree, scheduleWrite],
   );
 
   const sync = useGitHubSync({ flush: flushAll, onLocalChanges: applySyncResult });
@@ -244,7 +275,7 @@ export function App() {
       .then(tree => {
         if (cancelled) return;
         setFs(tree);
-        setSelectedId(pickInitialSelection(tree));
+        setLayout(singlePane(pickInitialSelection(tree)));
       })
       .catch((err: Error) => {
         if (!cancelled) setFailure(err.message);
@@ -254,33 +285,49 @@ export function App() {
     };
   }, []);
 
-  // Read the selected file's text the first time it's opened.
+  // Read each pane's file the first time it's opened.
+  const openFiles = activeIds(layout);
+  const openKey = JSON.stringify(openFiles);
   useEffect(() => {
-    if (!fs || !selectedId) return;
-    const node = fs[selectedId];
-    // `binary` as well as `content`: a file that isn't text never gets
-    // content, so without it this re-reads on every fs change — and marking
-    // it binary *is* an fs change, so the two chase each other forever.
-    if (!node || node.type !== "file" || node.content !== undefined || node.binary) return;
-
+    if (!fs) return;
     let cancelled = false;
-    const segments = segmentsOf(selectedId);
-    // Bytes, then decode: reading an image as text would hand the editor
-    // U+FFFD soup, which its first save would write back over the original.
-    void readBytes(segments).then(stored => {
-      if (cancelled) return;
-      const content = stored === null ? "" : decodeText(stored);
-      if (content === null) {
-        setFs(prev => (prev ? markFileBinary(prev, selectedId) : prev));
-        return;
-      }
-      baseContent.current.set(selectedId, content);
-      setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
-    });
+    for (const id of openFiles) {
+      const node = fs[id];
+      // `binary` as well as `content`: a file that isn't text never gets
+      // content, so without it this re-reads on every fs change — and marking
+      // it binary *is* an fs change, so the two chase each other forever.
+      if (!node || node.type !== "file" || node.content !== undefined || node.binary) continue;
+
+      // Bytes, then decode: reading an image as text would hand the editor
+      // U+FFFD soup, which its first save would write back over the original.
+      void readBytes(segmentsOf(id)).then(stored => {
+        if (cancelled) return;
+        const content = stored === null ? "" : decodeText(stored);
+        if (content === null) {
+          setFs(prev => (prev ? markFileBinary(prev, id) : prev));
+          return;
+        }
+        baseContent.current.set(id, content);
+        setFs(prev => (prev ? updateFileContent(prev, id, content) : prev));
+      });
+    }
     return () => {
       cancelled = true;
     };
-  }, [fs, selectedId]);
+    // `openFiles` is what `openKey` encodes: the array is a fresh one every
+    // render, the paths in it are not. Serialising rather than joining on a
+    // separator, because a file name may legally contain anything but "/".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fs, openKey]);
+
+  // A file can vanish while it's open — deleted here, in another tab, or by a
+  // sync pulling someone else's deletion. Dropping the tab is the one place
+  // that has to handle all three, so it watches the tree rather than each
+  // path that could have caused it.
+  useEffect(() => {
+    if (!fs) return;
+    setLayout(prev => pruneMissing(prev, id => fs[id]?.type === "file"));
+  }, [fs]);
 
   // React to writes from other tabs.
   useEffect(
@@ -307,14 +354,14 @@ export function App() {
 
           if (merged !== mine) {
             setFs(prev => (prev ? updateFileContent(prev, id, merged) : prev));
-            if (id === selectedRef.current) setExternalEdit(n => n + 1);
+            bumpExternalEdit(id);
           }
           // Push the reconciled text back so the other tab converges too.
           // Merging is stable, so this settles rather than ping-ponging.
           if (merged !== theirs) scheduleWrite(id, merged);
         });
       }),
-    [refreshTree, scheduleWrite],
+    [bumpExternalEdit, refreshTree, scheduleWrite],
   );
 
   // Don't let a debounced save die with the tab. Best-effort: writes are
@@ -334,6 +381,9 @@ export function App() {
     };
   }, [flushWrite]);
 
+  // The URL names the focused pane's file: with a split there are two files
+  // on screen, and only one of them can be the one a reload comes back to.
+  const selectedId = focusedFileId(layout);
   useEffect(() => {
     if (!fs) return;
     const path = BASE_PATH + (selectedId ? getNodePath(selectedId) : "/");
@@ -345,7 +395,14 @@ export function App() {
   const selectedFile = selectedId && fs?.[selectedId]?.type === "file" ? fs[selectedId] : null;
 
   const handleSelectFile = (id: string) => {
-    setSelectedId(id);
+    // `replace` on a phone: there's no tab strip to steer there, so opening a
+    // file swaps out the one before it rather than piling up invisibly.
+    setLayout(prev => openFile(prev, id, { replace: !wide }));
+    setSidebarOpen(false);
+  };
+
+  const handleOpenBeside = (id: string) => {
+    setLayout(prev => openBeside(prev, id));
     setSidebarOpen(false);
   };
 
@@ -365,7 +422,6 @@ export function App() {
     if (queued) clearTimeout(queued.timer);
     pending.current.delete(id);
     baseContent.current.delete(id);
-    if (selectedId === id) setSelectedId(null);
     void mutate(() => removeEntry(segments));
   };
 
@@ -375,7 +431,7 @@ export function App() {
     void mutate(async () => {
       await renameEntry(from, name);
       baseContent.current.delete(id);
-      remapSelection(id, idOf([...from.slice(0, -1), name]));
+      remapTabs(id, idOf([...from.slice(0, -1), name]));
     });
   };
 
@@ -385,7 +441,7 @@ export function App() {
     void mutate(async () => {
       await moveEntry(from, segmentsOf(newParentId));
       baseContent.current.delete(id);
-      remapSelection(id, idOf([...segmentsOf(newParentId), from[from.length - 1]!]));
+      remapTabs(id, idOf([...segmentsOf(newParentId), from[from.length - 1]!]));
     });
   };
 
@@ -401,10 +457,9 @@ export function App() {
     });
   }, [refreshTree]);
 
-  const handleContentChange = (content: string) => {
-    if (!selectedId) return;
-    setFs(prev => (prev ? updateFileContent(prev, selectedId, content) : prev));
-    scheduleWrite(selectedId, content);
+  const handleContentChange = (id: string, content: string) => {
+    setFs(prev => (prev ? updateFileContent(prev, id, content) : prev));
+    scheduleWrite(id, content);
   };
 
   if (failure) {
@@ -439,19 +494,53 @@ export function App() {
       <Sidebar
         fs={fs}
         selectedId={selectedId}
+        openIds={allOpenIds(layout)}
         onSelectFile={handleSelectFile}
+        onOpenBeside={wide ? handleOpenBeside : null}
         onCreate={handleCreate}
         onDelete={handleDelete}
         onRename={handleRename}
         onMove={handleMove}
         footer={<SyncPanel sync={sync} />}
       />
-      <Editor
-        file={selectedFile}
-        externalEdit={externalEdit}
-        onChange={handleContentChange}
-        onAssetAdded={handleAssetAdded}
-      />
+      <div className="panes">
+        {/*
+          Only the focused pane is rendered on a narrow screen. Hiding the
+          other one in CSS wouldn't do: it would still mount a second Crepe
+          instance over a second file and run its whole save loop behind a
+          screen nobody can see.
+        */}
+        {(wide ? layout.panes : [layout.panes[layout.focused]!]).map((pane, index) => {
+          const paneIndex = wide ? index : layout.focused;
+          const file = pane.activeId && fs[pane.activeId]?.type === "file" ? fs[pane.activeId]! : null;
+          return (
+            <div
+              key={paneIndex}
+              className={`pane ${layout.focused === paneIndex ? "pane-focused" : ""}`}
+              // Capture, so clicking into the editor focuses the pane before
+              // anything inside it swallows the event.
+              onPointerDownCapture={() => setLayout(prev => focusPane(prev, paneIndex))}
+            >
+              <TabStrip
+                pane={pane}
+                fs={fs}
+                focused={layout.focused === paneIndex}
+                canSplit={layout.panes.length < MAX_PANES}
+                onSelect={id => setLayout(prev => openFile(prev, id))}
+                onClose={id => setLayout(prev => closeTab(prev, paneIndex, id))}
+                onSplit={() => setLayout(prev => splitPane(prev))}
+                onClosePane={() => setLayout(prev => closePane(prev, paneIndex))}
+              />
+              <Editor
+                file={file}
+                externalEdit={file ? externalEdits[file.id] ?? 0 : 0}
+                onChange={handleContentChange}
+                onAssetAdded={handleAssetAdded}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

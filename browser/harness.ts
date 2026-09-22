@@ -339,12 +339,26 @@ export const statusText = (page: Page) => page.locator(".sync-status").first().t
 
 export async function openFile(page: Page, name: string): Promise<void> {
   await page.click(`.tree-row:has-text("${name}")`);
-  await page.waitForSelector(".milkdown-root .ProseMirror", { timeout: 10_000 });
+  // Scoped to the focused pane: with the editor split there are two of these,
+  // and a bare selector is a strict-mode violation rather than a guess.
+  await page.waitForSelector(".pane-focused .milkdown-root .ProseMirror", { timeout: 10_000 });
   await page.waitForTimeout(700);
 }
 
 export async function typeInEditor(page: Page, text: string): Promise<void> {
-  await page.click(".milkdown-root .ProseMirror");
+  await page.click(".pane-focused .milkdown-root .ProseMirror");
   await page.keyboard.press("Control+End");
   await page.keyboard.type(text);
+}
+
+/**
+ * Right-clicks a row and picks an item from the menu it opens.
+ *
+ * Rename/move/delete used to be buttons in the row itself; they're in this
+ * menu now, which is the only way to reach them on a real pointer device.
+ */
+export async function chooseFromContextMenu(page: Page, row: string, item: string): Promise<void> {
+  await page.locator(row).first().click({ button: "right" });
+  await page.waitForSelector(".context-menu", { timeout: 5_000 });
+  await page.locator(`.context-menu-item:has-text("${item}")`).first().click();
 }

@@ -20,6 +20,18 @@ bun start
 
 This project was created using `bun init` in bun v1.4.2. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
 
+## Editing
+
+On a large screen, several files can be open at once: clicking a file in the
+sidebar adds a tab, and the **▥** button at the end of the tab strip splits the
+editor into two panes side by side. Each pane keeps its own tabs; a file is
+only ever open in one of them. **✕** closes a pane, keeping its tabs in the one
+that remains. Phone-width screens show one file at a time instead.
+
+Right-click (or press and hold, on a touch screen) a file or folder in the
+sidebar for rename, move and delete, and for creating a file or folder inside
+it.
+
 ## Tests
 
 ```bash

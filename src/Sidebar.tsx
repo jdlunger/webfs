@@ -1,10 +1,16 @@
-import { useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useState, type DragEvent, type ReactNode } from "react";
 import { type FileSystem, type FSNode, ROOT_ID, childrenOf } from "./fs";
+import { ContextMenu, useContextMenuTrigger, type MenuItem, type MenuPosition } from "./ContextMenu";
 
 interface SidebarProps {
   fs: FileSystem;
+  /** The file the focused pane is showing. */
   selectedId: string | null;
+  /** Every open file, so tabs in the other pane are marked in the tree too. */
+  openIds: string[];
   onSelectFile: (id: string) => void;
+  /** Opens a file in the other pane. Null on narrow screens, which don't split. */
+  onOpenBeside: ((id: string) => void) | null;
   onCreate: (parentId: string, type: "file" | "folder") => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -20,8 +26,9 @@ interface MoveTarget {
   label: string;
 }
 
-// Drag-and-drop (used below) has no touch equivalent on mobile Safari, so
-// this gives every row a "Move to…" picker that works by tap or click too.
+// Drag-and-drop (used below) has no touch equivalent on mobile Safari, so the
+// context menu carries a "Move to…" submenu listing every folder it could go
+// to, which works by tap or click just as well.
 function listMoveTargets(fs: FileSystem, node: FSNode): MoveTarget[] {
   const blocked = new Set<string>();
   if (node.type === "folder") {
@@ -51,8 +58,54 @@ function listMoveTargets(fs: FileSystem, node: FSNode): MoveTarget[] {
   return targets;
 }
 
+/** An open menu: `node` is null for the one the empty tree area opens. */
+interface OpenMenu {
+  node: FSNode | null;
+  position: MenuPosition;
+}
+
 export function Sidebar(props: SidebarProps) {
   const [rootDragOver, setRootDragOver] = useState(false);
+  const [menu, setMenu] = useState<OpenMenu | null>(null);
+  // Held here rather than in the row, so the menu can start a rename and so
+  // two rows can't end up editing at once.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const openNodeMenu = useCallback((node: FSNode, position: MenuPosition) => setMenu({ node, position }), []);
+  const backgroundTrigger = useContextMenuTrigger(
+    useCallback((position: MenuPosition) => setMenu({ node: null, position }), []),
+  );
+
+  const menuItems = (node: FSNode | null): MenuItem[] => {
+    if (!node) {
+      return [
+        { label: "New File", onSelect: () => props.onCreate(ROOT_ID, "file") },
+        { label: "New Folder", onSelect: () => props.onCreate(ROOT_ID, "folder") },
+      ];
+    }
+
+    const items: MenuItem[] = [];
+    if (node.type === "folder") {
+      items.push({ label: "New File", onSelect: () => props.onCreate(node.id, "file") });
+      items.push({ label: "New Folder", onSelect: () => props.onCreate(node.id, "folder") });
+    } else {
+      items.push({ label: "Open", onSelect: () => props.onSelectFile(node.id) });
+      if (props.onOpenBeside) {
+        items.push({ label: "Open to the Side", onSelect: () => props.onOpenBeside?.(node.id) });
+      }
+    }
+    items.push({ label: "Rename", dividerBefore: true, onSelect: () => setRenamingId(node.id) });
+    items.push({
+      label: "Move to…",
+      submenu: listMoveTargets(props.fs, node).map(target => ({
+        label: target.label,
+        onSelect: () => props.onMove(node.id, target.id),
+      })),
+    });
+    items.push({ label: "Delete", dividerBefore: true, danger: true, onSelect: () => props.onDelete(node.id) });
+    return items;
+  };
 
   return (
     <div className="sidebar">
@@ -69,6 +122,7 @@ export function Sidebar(props: SidebarProps) {
       </div>
       <div
         className={`sidebar-tree ${rootDragOver ? "drop-target" : ""}`}
+        {...backgroundTrigger}
         onDragOver={e => {
           if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
           e.preventDefault();
@@ -89,32 +143,54 @@ export function Sidebar(props: SidebarProps) {
             depth={0}
             fs={props.fs}
             selectedId={props.selectedId}
+            openIds={props.openIds}
+            renamingId={renamingId}
             onSelectFile={props.onSelectFile}
-            onDelete={props.onDelete}
             onRename={props.onRename}
             onMove={props.onMove}
+            onStartRename={setRenamingId}
+            onOpenMenu={openNodeMenu}
           />
         ))}
       </div>
       {props.footer}
+      {menu ? <ContextMenu position={menu.position} items={menuItems(menu.node)} onClose={closeMenu} /> : null}
     </div>
   );
 }
 
-interface TreeNodeProps extends Omit<SidebarProps, "onCreate" | "footer"> {
+interface TreeNodeProps {
   node: FSNode;
   depth: number;
+  fs: FileSystem;
+  selectedId: string | null;
+  openIds: string[];
+  renamingId: string | null;
+  onSelectFile: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+  onMove: (id: string, newParentId: string) => void;
+  onStartRename: (id: string | null) => void;
+  onOpenMenu: (node: FSNode, position: MenuPosition) => void;
 }
 
-function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRename, onMove }: TreeNodeProps) {
+function TreeNode(props: TreeNodeProps) {
+  const { node, depth, fs, selectedId, openIds, renamingId, onSelectFile, onRename, onMove, onStartRename } = props;
   const [expanded, setExpanded] = useState(true);
-  const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
   const [dragOver, setDragOver] = useState(false);
-  const [actionsOpen, setActionsOpen] = useState(false);
+
+  const renaming = renamingId === node.id;
+  const menuTrigger = useContextMenuTrigger(
+    useCallback((position: MenuPosition) => props.onOpenMenu(node, position), [props.onOpenMenu, node]),
+  );
+
+  const startRename = () => {
+    setDraftName(node.name);
+    onStartRename(node.id);
+  };
 
   const commitRename = () => {
-    setRenaming(false);
+    onStartRename(null);
     const trimmed = draftName.trim();
     if (trimmed && trimmed !== node.name) onRename(node.id, trimmed);
     else setDraftName(node.name);
@@ -160,7 +236,7 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
         if (e.key === "Enter") commitRename();
         if (e.key === "Escape") {
           setDraftName(node.name);
-          setRenaming(false);
+          onStartRename(null);
         }
       }}
     />
@@ -169,62 +245,16 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
       className="tree-name"
       onDoubleClick={e => {
         e.stopPropagation();
-        setRenaming(true);
+        startRename();
       }}
     >
       {node.name}
     </span>
   );
 
-  const actionsSection = renaming ? null : (
-    <div className="tree-actions" onClick={e => e.stopPropagation()}>
-      {actionsOpen ? (
-        <>
-          <button
-            title="Rename"
-            onClick={() => {
-              setRenaming(true);
-              setActionsOpen(false);
-            }}
-          >
-            ✎
-          </button>
-          <select
-            className="tree-move-select"
-            title="Move to…"
-            value=""
-            onChange={e => {
-              const targetId = e.target.value;
-              if (targetId) onMove(node.id, targetId);
-              setActionsOpen(false);
-            }}
-          >
-            <option value="" disabled>
-              ⇄
-            </option>
-            {listMoveTargets(fs, node).map(target => (
-              <option key={target.id} value={target.id}>
-                {target.label}
-              </option>
-            ))}
-          </select>
-          <button
-            title="Delete"
-            onClick={() => {
-              setActionsOpen(false);
-              onDelete(node.id);
-            }}
-          >
-            ×
-          </button>
-        </>
-      ) : (
-        <button title="More actions" onClick={() => setActionsOpen(true)}>
-          ⋯
-        </button>
-      )}
-    </div>
-  );
+  // The rename input owns the pointer while it's up: a long press inside it
+  // would otherwise steal the caret placement it's there for.
+  const rowTrigger = renaming ? {} : menuTrigger;
 
   if (node.type === "folder") {
     const kids = childrenOf(fs, node.id);
@@ -234,39 +264,51 @@ function TreeNode({ node, depth, fs, selectedId, onSelectFile, onDelete, onRenam
           className={`tree-row tree-folder ${dragOver ? "drop-target" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
           onClick={() => setExpanded(e => !e)}
+          {...rowTrigger}
           {...dragHandlers}
         >
           <span className="tree-icon">{expanded ? "▾" : "▸"}</span>
           {nameSection}
-          {actionsSection}
         </div>
-        {expanded && kids.map(child => (
-          <TreeNode
-            key={child.id}
-            node={child}
-            depth={depth + 1}
-            fs={fs}
-            selectedId={selectedId}
-            onSelectFile={onSelectFile}
-            onDelete={onDelete}
-            onRename={onRename}
-            onMove={onMove}
-          />
-        ))}
+        {expanded &&
+          kids.map(child => (
+            <TreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              fs={fs}
+              selectedId={selectedId}
+              openIds={openIds}
+              renamingId={renamingId}
+              onSelectFile={onSelectFile}
+              onRename={onRename}
+              onMove={onMove}
+              onStartRename={onStartRename}
+              onOpenMenu={props.onOpenMenu}
+            />
+          ))}
       </div>
     );
   }
 
+  const classes = [
+    "tree-row",
+    "tree-file",
+    selectedId === node.id ? "tree-file-selected" : "",
+    selectedId !== node.id && openIds.includes(node.id) ? "tree-file-open" : "",
+    dragOver ? "drop-target" : "",
+  ];
+
   return (
     <div
-      className={`tree-row tree-file ${selectedId === node.id ? "tree-file-selected" : ""} ${dragOver ? "drop-target" : ""}`}
+      className={classes.filter(Boolean).join(" ")}
       style={{ paddingLeft: `${depth * 16 + 24}px` }}
       onClick={() => onSelectFile(node.id)}
+      {...rowTrigger}
       {...dragHandlers}
     >
       <span className="tree-icon">·</span>
       {nameSection}
-      {actionsSection}
     </div>
   );
 }

@@ -10,9 +10,9 @@ Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
 (Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
 OPFS into the in-memory record), `fs.ts` (pure queries over that record),
-`merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
-(`bun test`) plus `browser/` for what only a real browser can exercise
-(`bun run browser`).
+`panes.ts` (which files are open, in which pane), `merge.ts` (three-way line
+merge). Tests are `*.test.ts` at the root (`bun test`) plus `browser/` for
+what only a real browser can exercise (`bun run browser`).
 
 ## Git workflow
 
@@ -50,21 +50,72 @@ position and undo history, so never bump it for local typing.
   the OS for any editable region and can't be suppressed from the page; only
   the predictive-text suggestion strip responds to the attributes above.
 
+## Tabs, the split view, and the context menu
+
+`panes.ts` (pure layout arithmetic, `panes.test.ts`), `TabStrip.tsx`,
+`ContextMenu.tsx`, `useMediaQuery.ts`, and the pane rendering at the bottom of
+`App.tsx`. Driven end to end by `bun run browser panes`.
+
+- **`panes.ts` owns every decision about what's open where** — which tab
+  closing lands on, where a rename moves an open file to, what a split does.
+  It's pure, like `fs.ts`, so those rules are testable without a browser. Two
+  invariants the rest of the app leans on are written out at the top of the
+  file; read them before changing it.
+- **A file is open in at most one pane.** Two Crepe instances over one file
+  would each own an uncontrolled copy of the document, hear nothing of each
+  other's edits, and the second one to save would write its stale text over
+  the first. Opening a file that's already open focuses it where it is.
+- **Splitting opens an *empty* pane** rather than duplicating what you were
+  looking at (see above) — click a file to fill it. For the same reason panes
+  never collapse on their own: `pruneMissing` runs on every tree refresh and
+  couldn't tell "you closed the last tab" from "you just split", so it would
+  swallow the new pane the instant it appeared.
+- **`externalEdit` is per file now**, a `Record<id, number>` rather than one
+  counter, because two panes can show two files and a sync can land in either.
+- **Only the focused pane is rendered on a narrow screen**, decided in
+  JavaScript (`useMediaQuery`), not CSS. `display: none` would still mount a
+  second Crepe instance over a second file and run its whole save loop behind
+  a screen nobody can see. The `768px` breakpoint is therefore written twice —
+  `WIDE_SCREEN` in `useMediaQuery.ts` and the media blocks in `index.css`.
+- **The URL follows the focused pane's file.** With a split there are two
+  files on screen and only one of them can be what a reload comes back to.
+- **A tab is dropped by watching the tree, not the deletion.** A file can
+  vanish because it was deleted here, in another tab, or by a sync pulling
+  someone else's deletion; `pruneMissing` against a refreshed `fs` covers all
+  three at once, which is why it has to return the *same* layout when nothing
+  changed or it would re-render forever.
+- **The context menu is portalled to `<body>`.** The mobile sidebar is
+  `transform`ed, which makes it the containing block for `position: fixed`
+  descendants — rendered in place, the menu would be clipped to the drawer and
+  slide away with it.
+- **A row's long-press trigger stops `pointerdown` from propagating.** The
+  tree behind it arms a trigger of its own for the empty-area menu; without
+  that, both fire and the outer one wins, so a long press on a file showed
+  "New File / New Folder".
+- **The click after a long press is swallowed** (`onClickCapture` on the row),
+  or long-pressing a file would also open it. `opened` is cleared on every
+  `pointerdown`, including a mouse's, because a right-click sets it and sends
+  no click — the *next* left click would otherwise be eaten.
+- **Crepe's content padding needs a second override** beside the phone one:
+  120px a side in a half-width pane leaves a strip barely wider than the
+  margins. See `.panes:has(.pane + .pane)` in `index.css`.
+
 ## Mobile (iOS Safari) considerations
 
 The sidebar becomes a slide-in drawer below 768px (see `.sidebar-open` /
 `.mobile-topbar` / `.sidebar-scrim` in `index.css`), toggled from a topbar
 hamburger button. Notes learned the hard way:
 - Touch targets need real sizing (44px), not desktop hover-revealed
-  affordances — `.tree-actions` are hover-only on desktop but forced visible
-  on mobile.
-- Showing every row action (rename/move/delete) inline at once crushed file
-  names down to a few visible characters at phone widths; they're collapsed
-  behind a single `⋯` toggle per row that expands on tap instead.
+  affordances — the context menu's rows are padded out at phone widths.
+- Row actions were once buttons *in* the row (rename/move/delete, later
+  collapsed behind a `⋯` toggle because shown at once they crushed file names
+  down to a few visible characters). They're a context menu now — long press,
+  or right-click on desktop — so the row is just the name again and nothing
+  has to be squeezed in beside it.
 - Double-click (rename) and HTML5 drag-and-drop (move) don't work on mobile
-  Safari; both have explicit tap-friendly alternatives (a rename button, and
-  a "Move to…" `<select>` listing every folder path) alongside the
-  desktop-only double-click/drag affordances.
+  Safari; both have tap-friendly equivalents in that menu (Rename, and a
+  "Move to…" submenu listing every folder path) alongside the desktop-only
+  double-click/drag affordances.
 - Use `100dvh`, not `100vh` (Safari's address bar resizes the viewport), and
   `env(safe-area-inset-*)` padding for anything pinned to a screen edge.
 - Crepe's default content padding/heading sizes are tuned for a wide desktop
@@ -156,9 +207,15 @@ app shows, and folders are inspectable and exportable as real directories.
   GitHub branch can hold the same tree (see GitHub sync below). OPFS stays the
   source of truth for what the app shows; sync reconciles into it and reads
   back out of it, never around it.
-- `bun test` covers `merge.ts` (`merge.test.ts`) and `tree.ts`
+- **Seeding is deduplicated across overlapping calls** (`loading` in
+  `tree.ts`). "Is the store empty, and if so fill it" isn't atomic: two calls
+  both walk an empty store and both seed it, and since `createDirectory`
+  uniquifies rather than reusing, a first visit ended up with `Projects` *and*
+  `Projects 2`. React's StrictMode does exactly that in development, so this
+  reproduced on the first load of `bun dev` and in every browser suite.
+- `bun test` covers `merge.ts` (`merge.test.ts`), `tree.ts`
   (`tree.test.ts`: projection, id stability across rename/move, name
-  validation). OPFS itself can't run headless, so seeding, rename, folder
+  validation) and `panes.ts` (`panes.test.ts`). OPFS itself can't run headless, so seeding, rename, folder
   moves, two-tab merging and offline are verified by driving real Chromium
   tabs — see Browser suites below.
 
@@ -364,8 +421,8 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`). The dev server is started by the runner,
-  so nothing needs to be up first. Chromium comes from
+  (`sync`, `empty-repo`, `images`, `panes`). The dev server is started by the
+  runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
   browser — so run them by hand after touching sync, storage or the editor.
@@ -375,6 +432,10 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   404 where GitHub answers 409, and a broken empty-repo path passed its own
   test twice because of it. If you extend the fake, copy GitHub's failures as
   carefully as its successes.
+- **A long press is driven through CDP touch events**, not a synthesised
+  `contextmenu`: what's being tested is the browser's own handling of a finger
+  held still, including the click it sends afterwards. `page.dispatchEvent`
+  can't express that, and a suite that fakes it would pass over a broken one.
 - **Poll outcomes, never the status line.** It shows what the *last* sync
   did, so asserting on it right after clicking Sync reads the previous run
   and passes for the wrong reason — which it did, hiding a real failure.

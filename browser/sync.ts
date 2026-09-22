@@ -7,6 +7,7 @@
 import type { Browser } from "playwright";
 import {
   Checks,
+  chooseFromContextMenu,
   FakeGitHub,
   asText,
   connectThroughDialog,
@@ -85,12 +86,8 @@ export default async function run(browser: Browser): Promise<number> {
     merged.replace(/\n/g, "\\n").slice(0, 160),
   );
 
-  // Deleting here deletes there. (.tree-actions is hover-revealed on desktop.)
-  const row = '.tree-row:has-text("from-github.md")';
-  await page.locator(row).hover();
-  await page.locator(`${row} .tree-actions button`).first().click();
-  await page.locator(row).hover();
-  await page.locator(`${row} .tree-actions button[title="Delete"]`).click();
+  // Deleting here deletes there.
+  await chooseFromContextMenu(page, '.tree-row:has-text("from-github.md")', "Delete");
   await waitUntil("the file to leave OPFS", async () => !(await opfsFiles(page))["Shared/from-github.md"]);
   await syncAndSettle(page);
   checks.ok("deleting here deletes there", host.files["Shared/from-github.md"] === undefined, Object.keys(host.files).join(", "));

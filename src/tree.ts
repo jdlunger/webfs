@@ -61,6 +61,18 @@ const SEED: Array<{ dir: string; files: Array<{ name: string; body: string }> }>
 ];
 
 /**
+ * Held while a load is in flight, so two overlapping calls share one seed.
+ *
+ * Nothing about "is the store empty, and if so fill it" is atomic: both calls
+ * walk an empty store and both seed it, and since `createDirectory` uniquifies
+ * rather than reusing, a first visit ends up with `Projects` *and*
+ * `Projects 2`. React's StrictMode does exactly that in development — it
+ * mounts, tears down and remounts, running the load effect twice — so this is
+ * reproducible on the first load of `bun dev` and in every browser suite.
+ */
+let loading: Promise<FileSystem> | null = null;
+
+/**
  * Reads the tree, writing starter content first if the store is empty.
  *
  * `seed: false` is how a device with GitHub sync configured starts up: its
@@ -68,7 +80,14 @@ const SEED: Array<{ dir: string; files: Array<{ name: string; body: string }> }>
  * push three starter notes into someone's established notes repo (or collide
  * with files already at those paths) before the first sync could fill it.
  */
-export async function loadTree({ seed = true }: { seed?: boolean } = {}): Promise<FileSystem> {
+export function loadTree(options: { seed?: boolean } = {}): Promise<FileSystem> {
+  loading ??= readOrSeed(options).finally(() => {
+    loading = null;
+  });
+  return loading;
+}
+
+async function readOrSeed({ seed = true }: { seed?: boolean }): Promise<FileSystem> {
   let entries = await walk();
   if (entries.length === 0 && seed) {
     for (const { dir, files } of SEED) {

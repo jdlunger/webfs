@@ -26,14 +26,15 @@ interface EditorProps {
   file: FSNode | null;
   /** Counter bumped when another tab's edit has been merged into `file`. */
   externalEdit: number;
-  onChange: (content: string) => void;
+  /** Carries the id, because two panes can be editing two different files. */
+  onChange: (id: string, content: string) => void;
   /** A pasted image became a file; the tree and sync need to know. */
   onAssetAdded: () => void;
 }
 
 interface MilkdownEditorProps {
   file: FSNode;
-  onChange: (content: string) => void;
+  onChange: (id: string, content: string) => void;
   onAssetAdded: () => void;
 }
 
@@ -113,7 +114,7 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
     });
     crepe.on(listener => {
       listener.markdownUpdated((_ctx, markdown, prevMarkdown) => {
-        if (markdown !== prevMarkdown) onChangeRef.current(markdown);
+        if (markdown !== prevMarkdown) onChangeRef.current(file.id, markdown);
       });
     });
     const ready = crepe.create();
@@ -159,7 +160,6 @@ function BinaryFile({ file }: { file: FSNode }) {
 
   return (
     <div className="editor">
-      <div className="editor-header">{file.name}</div>
       <div className="binary-file">
         {preview ? <img src={preview} alt={file.name} /> : null}
         <p>This isn't a text file, so there's nothing to edit here. It syncs with everything else.</p>
@@ -183,18 +183,14 @@ export function Editor({ file, externalEdit, onChange, onAssetAdded }: EditorPro
   // its text does.
   if (file.content === undefined) {
     return (
-      <div className="editor">
-        <div className="editor-header">{file.name}</div>
-        <div className="editor-empty">
-          <p>Loading…</p>
-        </div>
+      <div className="editor editor-empty">
+        <p>Loading…</p>
       </div>
     );
   }
 
   return (
     <div className="editor">
-      <div className="editor-header">{file.name}</div>
       {/*
         The key carries `externalEdit` as well as the file id. Crepe is
         uncontrolled and only reads `defaultValue` at construction, so
