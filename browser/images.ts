@@ -7,7 +7,17 @@
  * device intact — without ever being opened as text, which would destroy it.
  */
 import type { Browser } from "playwright";
-import { Checks, FakeGitHub, asText, connectedContext, openApp, openFile, opfsFiles, waitUntil } from "./harness";
+import {
+  Checks,
+  FakeGitHub,
+  asText,
+  connectedContext,
+  expandFolder,
+  openApp,
+  openFile,
+  opfsFiles,
+  waitUntil,
+} from "./harness";
 
 /** A real 3×3 PNG, so the browser genuinely decodes it. */
 const PNG_BASE64 =
@@ -26,6 +36,8 @@ export default async function run(browser: Browser): Promise<number> {
   const page = await openApp(context);
   await waitUntil("the first pull", async () => Boolean((await opfsFiles(page))["Notes/welcome.md"]));
 
+  // The drive is new to this device, so it came up folded.
+  await expandFolder(page, "Notes");
   await openFile(page, "welcome.md");
   await page.click(".milkdown-root .ProseMirror");
   await page.evaluate(async base64 => {
@@ -74,7 +86,10 @@ export default async function run(browser: Browser): Promise<number> {
   const arrived = await waitUntil("the image on device two", async () => (await opfsFiles(page2))[ASSET] === PNG_BASE64);
   checks.ok("a second device gets the image, unharmed", arrived);
 
-  // Opening it must not rewrite it as text.
+  // Opening it must not rewrite it as text. This device is meeting the drive
+  // for the first time too, so both folders on the way down are closed.
+  await expandFolder(page2, "Notes");
+  await expandFolder(page2, "assets");
   await page2.click('.tree-row:has-text("screen shot.png")');
   await page2.waitForTimeout(1500);
   checks.ok("opening it shows a preview instead of editing bytes as text", (await page2.locator(".binary-file").count()) === 1);

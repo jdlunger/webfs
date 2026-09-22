@@ -11,6 +11,7 @@ import {
   FakeGitHub,
   asText,
   connectedContext,
+  expandFolder,
   openApp,
   openFile,
   opfsFiles,
@@ -54,7 +55,23 @@ export default async function run(browser: Browser): Promise<number> {
     JSON.stringify(Object.keys(local).sort()) === JSON.stringify(Object.keys(host.files).sort()),
     Object.keys(local).join(", "),
   );
-  checks.ok("the pulled file shows up in the sidebar", (await page.locator('.tree-row:has-text("from-github.md")').count()) > 0);
+  // A drive opened for the first time folds its tree away, and a pulled
+  // repository is the case that exists for: what arrives is someone's whole
+  // folder structure, expanded, with no way to collapse it in one go. The
+  // fold waits for a tree with something in it — this drive's store was empty
+  // until the pull landed — so it settles a render after the files appear.
+  const folded = await waitUntil("the pulled tree to fold", async () => {
+    const folder = await page.locator('.tree-row.tree-folder:has-text("Shared")').count();
+    const file = await page.locator('.tree-row:has-text("from-github.md")').count();
+    return folder > 0 && file === 0;
+  });
+  checks.ok("a drive pulled from a repository arrives folded", folded);
+
+  await page.click('.tree-row.tree-folder:has-text("Shared")');
+  checks.ok(
+    "the pulled file shows up in the sidebar once its folder is opened",
+    (await page.locator('.tree-row:has-text("from-github.md")').count()) > 0,
+  );
 
   // A local edit reaches the branch.
   await openFile(page, "from-github.md");
@@ -141,7 +158,11 @@ export default async function run(browser: Browser): Promise<number> {
   );
   checks.ok("a wiped but connected device refills from the repo without re-seeding", refilled);
 
-  // Auto-sync, without pressing anything.
+  // Auto-sync, without pressing anything. This device opened the drive for
+  // the first time, so its tree came up folded — and stays that way across
+  // the wipe above, since the workspace that recorded it is in localStorage
+  // rather than the store that was emptied.
+  await expandFolder(page2, "Shared");
   await openFile(page2, "new-on-github.md");
   await typeInEditor(page2, " — typed on device two");
   checks.ok(

@@ -174,6 +174,26 @@ with what comes back.
   so an empty list has to mean "as it has always looked", and a folder that
   arrives later — created here, or pulled by a sync — has to appear open
   rather than hidden inside an entry written before it existed.
+- **A drive opened for the first time folds its tree away** (`initialCollapsed`
+  in `workspace.ts`): every folder closed but the ones the opened file sits
+  inside, written as that drive's starting `collapsed` list and then edited
+  like any other. Adding a GitHub drive is how someone else's vault arrives
+  here, and expanded it is a wall of folder names with no "collapse all" to
+  answer it. Four things this has to get right, all of them in `App.tsx`:
+  - **Not the drive webfs seeded.** `shouldSeed` is read *before* the load,
+    which marks it; a tree of three starter notes this app just wrote is not
+    someone's vault, and folding away its own welcome would be silly.
+  - **It waits for a tree with something in it.** A GitHub drive's store is
+    empty when it loads — the repository hasn't been pulled yet — so the fold
+    is pending state (`foldPending`) that applies when the files land, a render
+    after the tree refresh.
+  - **Nothing is saved while it's pending**, or a reload in that window would
+    read back a drive that has already made its choices and the folders would
+    open wide after all. A drive switch clears the flag too, so a fold waiting
+    on the drive being left can't land on the one arrived at.
+  - **A folder made by hand cancels it** (`mutate`): whatever is being pulled
+    in can still fold itself away, but a folder someone just created is one
+    they want open.
 - **Expansion moved out of `TreeNode` into `App.tsx`.** A row's `useState`
   couldn't be it: rows are rebuilt on every tree refresh, and there has to be
   one place that persists the set, follows a rename through `remapId`, and can
@@ -839,6 +859,11 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   `vault` suite opens a note, waits out both debounces and checks the file is
   byte-identical. Every rewrite bug here was invisible on screen, so the only
   way to catch one is to read the bytes back.
+- **A drive a suite has just connected to comes up folded**, so a file inside
+  a folder has no row to click until `expandFolder` opens it. That's a call
+  the suite makes for itself rather than something `openFile` does quietly:
+  hiding it there would take the fold's own checks down with it the day it
+  stopped working.
 - **Assert on what a thing *is*, not what it's labelled.** A tab's `title` is
   its path, straight from the layout; its visible name comes from the tree and
   lags by a render, because `pruneMissing` runs in an effect on `fs`. So after

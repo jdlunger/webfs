@@ -4,6 +4,7 @@ import {
   type FSNode,
   type FileSystem,
   canMove,
+  childrenOf,
   findFirstFile,
   findNodeByPath,
   getNodePath,
@@ -48,7 +49,7 @@ import {
 } from "./storage";
 import { adoptContent, loadTree, projectTree } from "./tree";
 import { DrivePanel } from "./DrivePanel";
-import { type Workspace, loadWorkspace, saveWorkspace } from "./workspace";
+import { type Workspace, initialCollapsed, loadWorkspace, saveWorkspace } from "./workspace";
 import { useDriveSync } from "./useDriveSync";
 import type { SyncResult } from "./sync";
 import { loadDrives, loadLastDrive, markSeeded, saveDrives, saveLastDrive, shouldSeed } from "./driveConfig";
@@ -175,6 +176,14 @@ export function App() {
    * one place that persists it, follows a rename, and can be read back.
    */
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * Set when a drive is opened for the first time, cleared once the tree it
+   * applies to has arrived and been folded. State rather than a ref because
+   * the save below has to wait for it: a workspace written while this is
+   * pending would be read back as a drive that has already been visited, and
+   * its folders would open wide after all.
+   */
+  const [foldPending, setFoldPending] = useState(false);
 
   // Tabs and the split view are a large-screen affordance; a phone keeps
   // showing one file at a time, as it always has.
@@ -295,6 +304,9 @@ export function App() {
       // the path it was queued for, so this is what keeps a rename from
       // stranding it at the old name.
       await flushAll();
+      // Whatever is being pulled in can still fold itself away, but a folder
+      // someone makes by hand is one they want open.
+      setFoldPending(false);
       try {
         await change();
       } catch (err) {
@@ -396,6 +408,9 @@ export function App() {
     setExternalEdits({});
     setTextViews({});
     setCollapsed(new Set());
+    // A fold still waiting on the drive being left must not land on the one
+    // being arrived at, whose own workspace may say its folders are open.
+    setFoldPending(false);
     // Not the old drive's tree, for however long the new one takes to read.
     setFs(null);
 
@@ -406,10 +421,13 @@ export function App() {
     const fromUrl = locationDrive(drivesRef.current);
     const path = fromUrl.drive && driveId(fromUrl.drive) === driveKey ? fromUrl.path : null;
 
+    // Read before the load, which marks the drive seeded on the way through.
+    const seeding = shouldSeed(current);
+
     void ensureDirectory(mountOf(current))
       // Starter notes are for the drive webfs made on a first visit, and
       // nothing else — see `shouldSeed`.
-      .then(() => loadTree(storeRef.current, { seed: shouldSeed(current) }))
+      .then(() => loadTree(storeRef.current, { seed: seeding }))
       .then(tree => {
         markSeeded(current);
         if (cancelled) return;
@@ -419,6 +437,12 @@ export function App() {
         if (saved) {
           setCollapsed(new Set(saved.collapsed));
           setTextViews(Object.fromEntries(saved.textViews.map(id => [id, true])));
+        } else if (!seeding) {
+          // No workspace: this drive is being opened for the first time, so
+          // its tree arrives folded (see `initialCollapsed`). Not the drive
+          // webfs is seeding, though — that tree is three starter notes this
+          // app just wrote, and folding away its own welcome is silly.
+          setFoldPending(true);
         }
         // Only now may the effect below write: until this drive's saved
         // workspace has been read, the state it would persist is the empty
@@ -488,6 +512,22 @@ export function App() {
     setLayout(prev => pruneMissing(prev, id => fs[id]?.type === "file"));
   }, [fs]);
 
+  // A device that has never been here before starts with its folders closed,
+  // which is the difference between a readable sidebar and someone's whole
+  // vault structure at once.
+  //
+  // It waits for a tree with something in it rather than acting on the one
+  // that loads: a synced device's store is empty at that point — the
+  // repository hasn't been pulled yet — and there would be nothing to fold
+  // away. An empty repository stays pending until the first file exists, and
+  // the workspace isn't saved meanwhile, so a reload in that window is still a
+  // first visit rather than a device that has already made its choices.
+  useEffect(() => {
+    if (!fs || !foldPending || childrenOf(fs, ROOT_ID).length === 0) return;
+    setFoldPending(false);
+    setCollapsed(new Set(initialCollapsed(fs, allOpenIds(layout))));
+  }, [fs, layout, foldPending]);
+
   // Remember what's open, so a reload comes back to it. Written as it changes
   // rather than on the way out: `pagehide` is not reliably delivered on iOS,
   // and this is a few hundred bytes of JSON.
@@ -508,7 +548,7 @@ export function App() {
   useEffect(() => {
     const tree = fsRef.current;
     const drive = activeDrive.current;
-    if (!workspaceLoaded.current || !tree || !drive) return;
+    if (!workspaceLoaded.current || !tree || !drive || foldPending) return;
     saveWorkspace(drive, {
       layout,
       // Ids of things that no longer exist would otherwise pile up forever: a
@@ -517,7 +557,7 @@ export function App() {
       collapsed: [...collapsed].filter(id => tree[id]?.type === "folder"),
       textViews: Object.keys(textViews).filter(id => textViews[id] && tree[id]?.type === "file"),
     });
-  }, [layout, collapsed, textViews]);
+  }, [layout, collapsed, textViews, foldPending]);
 
   // React to writes from other tabs.
   useEffect(

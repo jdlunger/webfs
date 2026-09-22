@@ -21,6 +21,7 @@
  * edited by hand, must not be able to hand `panes.ts` a layout that breaks
  * the invariants the rest of the app leans on.
  */
+import { type FileSystem, ROOT_ID, idOf, segmentsOf } from "./fs";
 import { type Pane, type PaneLayout, MAX_PANES } from "./panes";
 import { driveId, type Drive } from "./drives";
 
@@ -139,4 +140,38 @@ export function saveWorkspace(drive: Drive, workspace: Workspace): void {
   } catch {
     /* nothing to do: the app just opens the way it always used to */
   }
+}
+
+/**
+ * What a drive opened for the first time starts with: every folder closed,
+ * except the ones an open file is inside.
+ *
+ * A tree that opens fully expanded is fine for the three starter notes and
+ * unreadable for a vault — the first thing you see is someone else's whole
+ * folder structure at once, and there is no "collapse all". So a drive with no
+ * workspace yet writes the list it would otherwise leave empty. Nothing about
+ * the meaning of `collapsed` changes: this is a starting point that is then
+ * remembered and edited like any other, and a folder that arrives afterwards
+ * still appears open, because it isn't in the list this produced.
+ *
+ * Since a workspace is per drive, this is every drive's own first visit, not
+ * the app's — which is where it matters most: adding a GitHub drive is exactly
+ * how someone else's vault arrives here.
+ *
+ * The exception exists because that same first load opens a file (or a deep
+ * link named one), and a selected file the sidebar can't show is worse than a
+ * folder left open.
+ */
+export function initialCollapsed(fs: FileSystem, open: readonly string[]): string[] {
+  const keep = new Set<string>();
+  for (const id of open) {
+    const segments = segmentsOf(id);
+    // The last segment is the file itself; everything before it is a folder.
+    for (let i = 1; i < segments.length; i++) keep.add(idOf(segments.slice(0, i)));
+  }
+  // The root is a folder in the record and not a row in the tree: collapsing
+  // it would hide everything.
+  return Object.values(fs)
+    .filter(node => node.type === "folder" && node.id !== ROOT_ID && !keep.has(node.id))
+    .map(node => node.id);
 }

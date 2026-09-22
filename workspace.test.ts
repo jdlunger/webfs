@@ -6,7 +6,12 @@
  */
 import { test, expect } from "bun:test";
 import { openIds, singlePane, splitPane, openBeside } from "./src/panes";
-import { type Workspace, parseWorkspace, serializeWorkspace } from "./src/workspace";
+import { type Workspace, initialCollapsed, parseWorkspace, serializeWorkspace } from "./src/workspace";
+import { projectTree } from "./src/tree";
+import type { WalkEntry } from "./src/storage";
+
+const dir = (name: string, children: WalkEntry[] = []): WalkEntry => ({ name, kind: "directory", children });
+const file = (name: string): WalkEntry => ({ name, kind: "file", children: [] });
 
 const workspace = (overrides: Partial<Workspace> = {}): Workspace => ({
   layout: singlePane("Notes/todo.md"),
@@ -100,4 +105,31 @@ test("a bad list of folders or views costs only itself, not the layout", () => {
     }),
   );
   expect(restored).toEqual(workspace({ layout: singlePane("a.md") }));
+});
+
+const vault = () =>
+  projectTree([
+    dir("Notes", [file("todo.md"), dir("Archive", [file("2025.md")])]),
+    dir("Projects", [file("ideas.md")]),
+    file("README.md"),
+  ]);
+
+test("a first visit starts with every folder closed", () => {
+  expect(initialCollapsed(vault(), []).sort()).toEqual(["Notes", "Notes/Archive", "Projects"]);
+});
+
+test("the folders an open file sits in stay open, or it couldn't be found", () => {
+  // Every ancestor, not just the immediate parent: a file three deep inside a
+  // closed folder is as invisible as one directly in it.
+  expect(initialCollapsed(vault(), ["Notes/Archive/2025.md"]).sort()).toEqual(["Projects"]);
+  expect(initialCollapsed(vault(), ["Projects/ideas.md"]).sort()).toEqual(["Notes", "Notes/Archive"]);
+  // A file at the root has no folder to keep open.
+  expect(initialCollapsed(vault(), ["README.md"]).sort()).toEqual(["Notes", "Notes/Archive", "Projects"]);
+});
+
+test("a tree with nothing pulled into it yet collapses nothing", () => {
+  // The case this has to get right on a synced device: the store is empty
+  // when the app loads, and folding away what isn't there would leave the
+  // repository to arrive wide open.
+  expect(initialCollapsed(projectTree([]), [])).toEqual([]);
 });

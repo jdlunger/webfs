@@ -459,6 +459,20 @@ export async function syncAndSettle(page: Page): Promise<void> {
 
 export const statusText = (page: Page) => page.locator(".sync-status").first().textContent();
 
+/**
+ * Opens a folder in the sidebar, for a drive that arrived folded.
+ *
+ * A drive being opened for the first time starts with every folder closed
+ * (`initialCollapsed`), so a suite that wants a file inside one has to say so
+ * — deliberately here rather than inside `openFile`, which would hide a fold
+ * that stopped working from the suites that depend on it.
+ */
+export async function expandFolder(page: Page, name: string): Promise<void> {
+  const row = page.locator(`.tree-row.tree-folder:has-text("${name}")`).first();
+  await row.waitFor({ timeout: 10_000 });
+  if ((await row.locator(".tree-icon").innerText()).trim() === "▸") await row.click();
+}
+
 export async function openFile(page: Page, name: string): Promise<void> {
   await page.click(`.tree-row:has-text("${name}")`);
   // Scoped to the focused pane: with the editor split there are two of these,
