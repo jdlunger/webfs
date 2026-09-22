@@ -4,7 +4,7 @@
  * since the same relative link is read by both.
  */
 import { test, expect } from "bun:test";
-import { assetName, isAbsoluteUrl, mimeOf, resolveAssetPath } from "./src/assets";
+import { assetCandidates, assetName, isAbsoluteUrl, mimeOf, resolveAssetPath } from "./src/assets";
 import { branchUrl } from "./src/SyncPanel";
 
 test("a link resolves against the folder of the note it appears in", () => {
@@ -30,6 +30,34 @@ test("a malformed or empty link resolves to nothing rather than guessing", () =>
   expect(resolveAssetPath("Notes/todo.md", "%E0%A4%A")).toBeNull();
   expect(resolveAssetPath("Notes/todo.md", "")).toBeNull();
   expect(resolveAssetPath("Notes/todo.md", "./")).toBeNull();
+});
+
+test("a link that resolves nowhere is looked for in Media, second", () => {
+  // Where the link points is tried first, always: the fallback exists for
+  // vaults written in Obsidian, and must never win over a real file.
+  expect(assetCandidates("Notes/todo.md", "assets/shot.png")).toEqual([
+    ["Notes", "assets", "shot.png"],
+    ["Media", "shot.png"],
+  ]);
+  // An Obsidian embed names the file and nothing else, from any depth.
+  expect(assetCandidates("Physiologie/Sa 05.09.2026.md", "Pasted image 20260905101712.png")).toEqual([
+    ["Physiologie", "Pasted image 20260905101712.png"],
+    ["Media", "Pasted image 20260905101712.png"],
+  ]);
+});
+
+test("the Media fallback isn't offered twice for a file already in it", () => {
+  expect(assetCandidates("note.md", "Media/shot.png")).toEqual([["Media", "shot.png"]]);
+  // From a note inside Media, the relative link already resolves there.
+  expect(assetCandidates("Media/note.md", "shot.png")).toEqual([["Media", "shot.png"]]);
+});
+
+test("a link with nothing to fall back on offers nothing", () => {
+  expect(assetCandidates("Notes/todo.md", "")).toEqual([]);
+  expect(assetCandidates("Notes/todo.md", "./")).toEqual([]);
+  expect(assetCandidates("Notes/todo.md", "%E0%A4%A")).toEqual([]);
+  // Out of the store by the direct route; the name is still worth a look.
+  expect(assetCandidates("c.md", "../escape.png")).toEqual([["Media", "escape.png"]]);
 });
 
 test("URLs the browser can already load are left alone", () => {

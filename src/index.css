@@ -447,6 +447,36 @@ body {
   }
 }
 
+/* An Obsidian embed, `![[Pasted image 20260905101712.png|541]]`. A span rather
+   than a bare <img> because the image arrives asynchronously, and a link that
+   resolves to nothing puts its own source here instead. */
+.wiki-image {
+  display: block;
+  margin: 8px 0;
+}
+
+.wiki-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.wiki-image-center img {
+  margin-inline: auto;
+}
+
+/* Says which embed is broken, rather than leaving a gap where it was. */
+.wiki-image-missing {
+  padding: 8px 12px;
+  border: 1px dashed #444;
+  border-radius: 6px;
+  color: #777;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
 /* Shown in place of the editor for a file that isn't text. */
 .binary-file {
   flex: 1;

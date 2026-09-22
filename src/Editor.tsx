@@ -1,9 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
 import { editorViewOptionsCtx } from "@milkdown/kit/core";
+import { $node, $remark } from "@milkdown/kit/utils";
 import { segmentsOf } from "./fs";
 import { createFile, readBytes, writeFile } from "./storage";
-import { ASSET_DIR, assetName, isAbsoluteUrl, mimeOf, resolveAssetPath } from "./assets";
+import { ASSET_DIR, assetCandidates, assetName, isAbsoluteUrl, mimeOf } from "./assets";
+import {
+  WIKI_IMAGE,
+  expandWikiImages,
+  wikiImageLayout,
+  wikiImageMarkdown,
+  wikiImageTarget,
+  type MarkdownNode,
+} from "./wikilinks";
 // Import the common feature styles individually rather than the
 // `theme/common/style.css` bundle: that bundle pulls in `latex.css`, which
 // `@import`s KaTeX's full font set (~1.4MB of base64 fonts) even though the
@@ -72,20 +81,130 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
     };
 
     /**
-     * What the DOM loads for a stored URL. The markdown keeps the relative
-     * path (that's what GitHub needs); the browser can't fetch OPFS, so the
-     * bytes are handed over as an object URL instead.
+     * Object URL per link, so a note that shows the same image twice reads it
+     * once and — more to the point — a re-render of a node doesn't mint a
+     * second URL for a picture that's already on screen.
      */
+    const loading = new Map<string, Promise<string | null>>();
+
+    /**
+     * The bytes behind a stored link, as something the DOM can load.
+     *
+     * The markdown keeps the link as written (that's what GitHub reads), and
+     * the browser can't fetch OPFS, so the file is read and handed over as an
+     * object URL instead. Null when the link names nothing in the store, after
+     * every candidate path has been tried.
+     */
+    const loadImage = (url: string): Promise<string | null> => {
+      const cached = loading.get(url);
+      if (cached) return cached;
+
+      const pending = (async () => {
+        for (const path of assetCandidates(file.id, url)) {
+          const bytes = await readBytes(path);
+          if (!bytes) continue;
+          const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeOf(url) }));
+          objectUrls.push(objectUrl);
+          return objectUrl;
+        }
+        return null;
+      })();
+
+      loading.set(url, pending);
+      return pending;
+    };
+
+    /** What Crepe's own image nodes load. Absolute URLs are already loadable. */
     const resolveImage = async (url: string): Promise<string> => {
       if (!url || isAbsoluteUrl(url)) return url;
-      const path = resolveAssetPath(file.id, url);
-      if (!path) return url;
-      const bytes = await readBytes(path);
-      if (!bytes) return url;
-      const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeOf(url) }));
-      objectUrls.push(objectUrl);
-      return objectUrl;
+      return (await loadImage(url)) ?? url;
     };
+
+    /**
+     * An Obsidian embed on screen. The image arrives after the node is in the
+     * document, since reading it is async and `toDOM` isn't; a link that
+     * resolves to nothing shows its own source instead of an empty gap, so
+     * it's clear *which* embed is broken.
+     */
+    const renderWikiImage = (raw: string): HTMLElement => {
+      const span = document.createElement("span");
+      span.className = "wiki-image";
+      span.dataset.wikiRaw = raw;
+
+      const { width, height, center } = wikiImageLayout(raw);
+      if (center) span.classList.add("wiki-image-center");
+
+      const img = document.createElement("img");
+      img.alt = wikiImageTarget(raw);
+      if (width !== undefined) img.style.width = `${width}px`;
+      if (height !== undefined) img.style.height = `${height}px`;
+      span.appendChild(img);
+
+      void loadImage(wikiImageTarget(raw)).then(src => {
+        if (src) {
+          img.src = src;
+          return;
+        }
+        span.classList.add("wiki-image-missing");
+        span.textContent = wikiImageMarkdown(raw);
+      });
+
+      return span;
+    };
+
+    /**
+     * The embed as a node of its own, holding the text between the brackets
+     * verbatim and writing it back unchanged. Without this the syntax is text
+     * to remark, and gets escaped into `!\[\[…]]` the first time the note is
+     * saved — see wikilinks.ts.
+     */
+    const wikiImageNode = $node(WIKI_IMAGE, () => ({
+      inline: true,
+      group: "inline",
+      atom: true,
+      attrs: { raw: { default: "" } },
+      parseDOM: [
+        {
+          tag: "span[data-wiki-raw]",
+          getAttrs: (dom: HTMLElement | string) => ({
+            raw: typeof dom === "string" ? "" : dom.dataset.wikiRaw ?? "",
+          }),
+        },
+      ],
+      toDOM: (node: { attrs: Record<string, unknown> }) => renderWikiImage(String(node.attrs.raw ?? "")),
+      parseMarkdown: {
+        match: (node: MarkdownNode) => node.type === WIKI_IMAGE,
+        runner: (state, node, type) => {
+          state.addNode(type, { raw: String(node.raw ?? "") });
+        },
+      },
+      toMarkdown: {
+        match: node => node.type.name === WIKI_IMAGE,
+        runner: (state, node) => {
+          state.addNode(WIKI_IMAGE, undefined, undefined, { raw: String(node.attrs.raw ?? "") });
+        },
+      },
+    }));
+
+    /**
+     * Both halves of the syntax: the embeds are cut out of the text remark
+     * parsed them into, and a stringify handler puts them back. remark has no
+     * idea what a `wikiImage` is otherwise and refuses to serialize one.
+     */
+    const wikiImageRemark = $remark(WIKI_IMAGE, () => function remarkWikiImage(this: {
+      data: () => { toMarkdownExtensions?: unknown[] };
+    }) {
+      const data = this.data();
+      const extensions = (data.toMarkdownExtensions ??= []);
+      extensions.push({
+        handlers: {
+          [WIKI_IMAGE]: (node: MarkdownNode) => wikiImageMarkdown(String(node.raw ?? "")),
+        },
+      });
+      return (tree: unknown) => {
+        expandWikiImages(tree as MarkdownNode);
+      };
+    });
 
     const crepe = new Crepe({
       root: containerRef.current,
@@ -112,6 +231,7 @@ function MilkdownEditor({ file, onChange, onAssetAdded }: MilkdownEditorProps) {
         attributes: { spellcheck: "false", autocorrect: "off", autocapitalize: "off" },
       }));
     });
+    crepe.editor.use(wikiImageRemark).use(wikiImageNode);
     crepe.on(listener => {
       listener.markdownUpdated((_ctx, markdown, prevMarkdown) => {
         if (markdown !== prevMarkdown) onChangeRef.current(file.id, markdown);

@@ -6,10 +6,24 @@
  * without mounting one — the `..` guard in particular is the kind of thing
  * that should never be verified by eye.
  */
-import { segmentsOf } from "./fs";
+import { idOf, segmentsOf } from "./fs";
 
 /** Where a pasted image lands: a folder beside the note that references it. */
 export const ASSET_DIR = "assets";
+
+/**
+ * Obsidian's attachment folder, and the one place a link is looked for when it
+ * doesn't resolve where it points.
+ *
+ * A vault keeps every attachment in one folder at the root and refers to it by
+ * bare filename from anywhere — `![[Pasted image 20260905101712.png]]` in a
+ * note three folders deep. webfs resolves links the way GitHub does, relative
+ * to the note, so that link points at a file beside the note that isn't there.
+ * Rather than make the folder configurable, the name Obsidian defaults to is
+ * simply tried second. It costs one extra miss on a link that's broken anyway,
+ * and it's only reached when the honest interpretation found nothing.
+ */
+export const MEDIA_DIR = "Media";
 
 const IMAGE_TYPES: Record<string, string> = {
   png: "image/png",
@@ -65,6 +79,42 @@ export function resolveAssetPath(noteId: string, url: string): string[] | null {
   }
 
   return named ? segments : null;
+}
+
+/**
+ * The name at the end of a link, decoded, or null if it doesn't end in one.
+ */
+function linkedName(url: string): string | null {
+  const raw = url.split("/").filter(segment => segment !== "" && segment !== "." && segment !== "..").pop();
+  if (raw === undefined) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every place a relative link might be, best interpretation first.
+ *
+ * The first is where the link actually points, which is what GitHub reads and
+ * what webfs itself writes. The second is `Media/`, for a vault that was
+ * authored in Obsidian (see MEDIA_DIR). A caller reads them in order and takes
+ * the first that exists — the fallback is never preferred over a real file.
+ */
+export function assetCandidates(noteId: string, url: string): string[][] {
+  const candidates: string[][] = [];
+
+  const direct = resolveAssetPath(noteId, url);
+  if (direct) candidates.push(direct);
+
+  const name = linkedName(url);
+  if (name !== null) {
+    const media = [MEDIA_DIR, name];
+    if (!direct || idOf(direct) !== idOf(media)) candidates.push(media);
+  }
+
+  return candidates;
 }
 
 /** Keeps the pasted file's name where it's usable, and invents one where it isn't. */

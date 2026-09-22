@@ -10,8 +10,9 @@ import sync from "./sync";
 import emptyRepo from "./empty-repo";
 import images from "./images";
 import panes from "./panes";
+import wikilinks from "./wikilinks";
 
-const suites = { sync, "empty-repo": emptyRepo, images, panes } as const;
+const suites = { sync, "empty-repo": emptyRepo, images, panes, wikilinks } as const;
 
 const requested = process.argv.slice(2);
 const unknown = requested.filter(name => !(name in suites));
