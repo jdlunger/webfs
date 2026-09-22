@@ -10,8 +10,8 @@ Key files: `App.tsx` (top-level state + URL routing + cross-tab
 reconciliation), `Sidebar.tsx` (file tree, rename/move UI), `Editor.tsx`
 (Milkdown integration), `storage.ts` (thin OPFS layer), `tree.ts` (projects
 OPFS into the in-memory record), `fs.ts` (pure queries over that record),
-`panes.ts` (which files are open, in which pane), `merge.ts` (three-way line
-merge). Tests are `*.test.ts` at the root (`bun test`) plus `browser/` for
+`panes.ts` (which files are open, in which pane), `workspace.ts` (that layout
+remembered in localStorage), `merge.ts` (three-way line merge). Tests are `*.test.ts` at the root (`bun test`) plus `browser/` for
 what only a real browser can exercise (`bun run browser`).
 
 ## Git workflow
@@ -78,8 +78,9 @@ strip) swaps Crepe for a textarea holding the file's markdown.
   `App.tsx`, keyed by id). The toggle then acts on the document you can
   actually see, a split can hold one file rendered and another as source, and
   closing a pane doesn't shuffle anyone's view. Being keyed by id, it has to
-  follow a rename the way tabs do — `remapTabs` remaps both, through
-  `remapId` in `fs.ts`, which `panes.ts` uses for the same rule.
+  follow a rename the way tabs do — `remapTabs` remaps it, the tabs and the
+  collapsed folders together, through `remapId` in `fs.ts`, which `panes.ts`
+  uses for the same rule.
 - **The textarea is controlled, where Crepe is uncontrolled.** So an edit
   merged in from another tab or a sync simply lands in it, and `externalEdit`
   has nothing to remount — that counter is for Crepe alone.
@@ -146,6 +147,66 @@ strip) swaps Crepe for a textarea holding the file's markdown.
 - **Crepe's content padding needs a second override** beside the phone one:
   120px a side in a half-width pane leaves a strip barely wider than the
   margins. See `.panes:has(.pane + .pane)` in `index.css`.
+
+## What a reload comes back to (`workspace.ts`)
+
+Which files are open in which pane, which folders are collapsed, and which
+files are shown as source are remembered in localStorage (`webfs:workspace`)
+and restored on load. `workspace.ts` is the store and its validation;
+`App.tsx` holds the state and decides what to do with what comes back.
+
+- **localStorage, not OPFS**, for the reason `syncConfig.ts` is there: OPFS is
+  the tree that gets pushed to GitHub, and none of this belongs in someone's
+  notes repository. It is also per-device *on purpose* — which files you had
+  open on a phone is not a fact about the notes, and syncing it would have two
+  devices fighting over one answer.
+- **Collapsed folders are stored, not expanded ones.** A tree opens expanded,
+  so an empty list has to mean "as it has always looked", and a folder that
+  arrives later — created here, or pulled by a sync — has to appear open
+  rather than hidden inside an entry written before it existed.
+- **Expansion moved out of `TreeNode` into `App.tsx`.** A row's `useState`
+  couldn't be it: rows are rebuilt on every tree refresh, and there has to be
+  one place that persists the set, follows a rename through `remapId`, and can
+  be read back. `Sidebar` takes `collapsed` and `onToggleFolder` now.
+- **Everything restored is validated, because nothing else here is.** What
+  comes back out of localStorage is the one input to the app that nobody typed
+  and nothing this run produced — a build old, hand-edited, half-written — and
+  it feeds straight into `panes.ts`, whose invariants the rest of the app
+  leans on. `parseWorkspace` enforces them on the way in: at most `MAX_PANES`
+  panes, no file open in two of them (the one that would put two Crepe
+  instances over one document), an `activeId` that is really one of that
+  pane's tabs, a `focused` that names a pane that exists. An entry it can't
+  make sense of is dropped whole rather than half-read, and so is one whose
+  `version` this build doesn't know. The two advisory lists — collapsed
+  folders and source views — are dropped on their own instead, since a bad one
+  costs an expanded folder, not a working app. `workspace.test.ts` covers it;
+  `bun run browser panes` covers the round trip through a real reload.
+- **The URL still wins over the remembered layout.** They normally agree — the
+  URL is written from the focused pane on every change — so `initialLayout`
+  only has something to reconcile when the URL came from somewhere else: a
+  deep link, a bookmark, a link someone sent. That file is what the visitor
+  asked for, so it's opened into the restored panes (or focused where it
+  already is).
+- **Restored tabs are pruned against the tree that actually loaded**, the same
+  way a tab is dropped when its file vanishes while the app is open. Worth
+  knowing: on a device whose OPFS was evicted but whose localStorage survived,
+  that prunes everything before the first pull, and the pruned layout is what
+  gets saved back. The alternative is holding tabs for files that may never
+  return, and the cost here is a few clicks.
+- **A remembered workspace is restored as it stands, empty or not** — closing
+  every tab is something someone did on purpose. Only a *first* visit, with
+  nothing stored, falls back to opening the first file in the tree.
+- **It's written as it changes, not on the way out.** `pagehide` isn't
+  reliably delivered on iOS, and this is a few hundred bytes of JSON. The
+  effect deliberately doesn't depend on `fs` — that changes on every keystroke
+  — and reads it through a ref instead, so a stale id can survive until the
+  next change sweeps it up. Writing is also gated on the restore having
+  happened, or the component's empty initial state would erase the entry it is
+  about to read.
+- **Two tabs share one entry, and the last one to change something wins.**
+  There is nothing to merge: a layout is what one window is showing. A per-tab
+  store (sessionStorage) would forget everything the moment the browser
+  closed, which is the case this exists for.
 
 ## Mobile (iOS Safari) considerations
 

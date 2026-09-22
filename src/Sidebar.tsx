@@ -8,6 +8,13 @@ interface SidebarProps {
   selectedId: string | null;
   /** Every open file, so tabs in the other pane are marked in the tree too. */
   openIds: string[];
+  /**
+   * Folder ids drawn closed. Held by `App.tsx` rather than by each row: it
+   * outlives the rows, which are rebuilt on every tree refresh, and it is
+   * remembered across reloads (`workspace.ts`).
+   */
+  collapsed: ReadonlySet<string>;
+  onToggleFolder: (id: string) => void;
   onSelectFile: (id: string) => void;
   /** Opens a file in the other pane. Null on narrow screens, which don't split. */
   onOpenBeside: ((id: string) => void) | null;
@@ -144,7 +151,9 @@ export function Sidebar(props: SidebarProps) {
             fs={props.fs}
             selectedId={props.selectedId}
             openIds={props.openIds}
+            collapsed={props.collapsed}
             renamingId={renamingId}
+            onToggleFolder={props.onToggleFolder}
             onSelectFile={props.onSelectFile}
             onRename={props.onRename}
             onMove={props.onMove}
@@ -165,7 +174,9 @@ interface TreeNodeProps {
   fs: FileSystem;
   selectedId: string | null;
   openIds: string[];
+  collapsed: ReadonlySet<string>;
   renamingId: string | null;
+  onToggleFolder: (id: string) => void;
   onSelectFile: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onMove: (id: string, newParentId: string) => void;
@@ -174,8 +185,12 @@ interface TreeNodeProps {
 }
 
 function TreeNode(props: TreeNodeProps) {
-  const { node, depth, fs, selectedId, openIds, renamingId, onSelectFile, onRename, onMove, onStartRename } = props;
-  const [expanded, setExpanded] = useState(true);
+  const { node, depth, fs, selectedId, openIds, collapsed, renamingId, onSelectFile, onRename, onMove, onStartRename } =
+    props;
+  // A folder is open unless it's been closed, so a folder that appears later —
+  // created here, or pulled by a sync — shows its contents rather than hiding
+  // them behind a state nobody chose.
+  const expanded = !collapsed.has(node.id);
   const [draftName, setDraftName] = useState(node.name);
   const [dragOver, setDragOver] = useState(false);
 
@@ -263,7 +278,7 @@ function TreeNode(props: TreeNodeProps) {
         <div
           className={`tree-row tree-folder ${dragOver ? "drop-target" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
-          onClick={() => setExpanded(e => !e)}
+          onClick={() => props.onToggleFolder(node.id)}
           {...rowTrigger}
           {...dragHandlers}
         >
@@ -279,7 +294,9 @@ function TreeNode(props: TreeNodeProps) {
               fs={fs}
               selectedId={selectedId}
               openIds={openIds}
+              collapsed={collapsed}
               renamingId={renamingId}
+              onToggleFolder={props.onToggleFolder}
               onSelectFile={onSelectFile}
               onRename={onRename}
               onMove={onMove}

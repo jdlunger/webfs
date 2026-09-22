@@ -54,6 +54,7 @@ import {
 } from "./storage";
 import { adoptContent, loadTree, projectTree } from "./tree";
 import { SyncPanel } from "./SyncPanel";
+import { type Workspace, loadWorkspace, saveWorkspace } from "./workspace";
 import { useGitHubSync } from "./useGitHubSync";
 import type { SyncResult } from "./sync";
 import { loadConfig } from "./syncConfig";
@@ -84,13 +85,39 @@ function restoreRedirectedPath(): void {
 
 restoreRedirectedPath();
 
-function pickInitialSelection(fs: FileSystem): string | null {
+/** The file the URL names, if it still exists. */
+function urlSelection(fs: FileSystem): string | null {
   const path = stripBasePath(decodeURIComponent(window.location.pathname));
   if (path && path !== "/") {
     const match = findNodeByPath(fs, path);
     if (match && match.type === "file") return match.id;
   }
-  return findFirstFile(fs)?.id ?? null;
+  return null;
+}
+
+/**
+ * What's on screen on a fresh load: the panes as they were left, with the
+ * URL's file opened into them.
+ *
+ * The two normally agree — the URL is written from the focused pane on every
+ * change — so there's only something to reconcile when the URL came from
+ * somewhere else: a deep link, a bookmark, a link someone sent. That file is
+ * what the visitor asked for, so it's opened (or focused where it already is)
+ * rather than the remembered layout quietly winning.
+ *
+ * Tabs are pruned against the tree that actually loaded, the same way they are
+ * when a file vanishes while the app is open: it may have been deleted on
+ * another device since, and on a synced device the store can still be empty
+ * here because nothing has been pulled yet.
+ */
+function initialLayout(fs: FileSystem, saved: Workspace | null): PaneLayout {
+  const url = urlSelection(fs);
+  // Nothing remembered — a first visit — opens a file rather than a
+  // placeholder. A remembered workspace is restored as it stands, empty or
+  // not: closing every tab is a thing someone did on purpose.
+  if (!saved) return singlePane(url ?? findFirstFile(fs)?.id ?? null);
+  const restored = pruneMissing(saved.layout, id => fs[id]?.type === "file");
+  return url ? openFile(restored, url) : restored;
 }
 
 export function App() {
@@ -114,6 +141,12 @@ export function App() {
    * closing a pane doesn't shuffle anyone's view out from under them.
    */
   const [textViews, setTextViews] = useState<Record<string, boolean>>({});
+  /**
+   * Folders the tree draws closed, held here rather than in each row so it
+   * survives the rows being rebuilt on every tree refresh — and so there is
+   * one place that persists it, follows a rename, and can be read back.
+   */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
 
   // Tabs and the split view are a large-screen affordance; a phone keeps
   // showing one file at a time, as it always has.
@@ -137,6 +170,9 @@ export function App() {
    * nudge it. Calling through a ref keeps those callbacks stable.
    */
   const requestSync = useRef<() => void>(() => {});
+
+  /** Guards the workspace from being saved before it has been restored. */
+  const workspaceLoaded = useRef(false);
 
   /** Text as last seen on disk, keyed by path — the base for three-way merges. */
   const baseContent = useRef(new Map<string, string>());
@@ -188,12 +224,14 @@ export function App() {
   }, [flushWrite]);
 
   /**
-   * Follows every open tab — and each file's chosen view — when the node it
-   * points at is renamed or moved. Both are keyed by id, and an id is a path.
+   * Follows every open tab — and each file's chosen view, and every collapsed
+   * folder — when the node it points at is renamed or moved. All three are
+   * keyed by id, an id is a path, and `remapId` takes a whole subtree with it.
    */
   const remapTabs = useCallback((from: string, to: string) => {
     setLayout(prev => remapPaths(prev, from, to));
     setTextViews(prev => Object.fromEntries(Object.entries(prev).map(([id, text]) => [remapId(id, from, to), text])));
+    setCollapsed(prev => new Set([...prev].map(id => remapId(id, from, to))));
   }, []);
 
   /** Runs a structural change, then re-reads the tree and tells other tabs. */
@@ -288,8 +326,17 @@ export function App() {
     void loadTree({ seed: loadConfig() === null })
       .then(tree => {
         if (cancelled) return;
+        const saved = loadWorkspace();
         setFs(tree);
-        setLayout(singlePane(pickInitialSelection(tree)));
+        setLayout(initialLayout(tree, saved));
+        if (saved) {
+          setCollapsed(new Set(saved.collapsed));
+          setTextViews(Object.fromEntries(saved.textViews.map(id => [id, true])));
+        }
+        // Only now may the effect below write: until the saved workspace has
+        // been read, the state it would persist is this component's empty
+        // initial one, which would erase what it is about to restore.
+        workspaceLoaded.current = true;
       })
       .catch((err: Error) => {
         if (!cancelled) setFailure(err.message);
@@ -342,6 +389,32 @@ export function App() {
     if (!fs) return;
     setLayout(prev => pruneMissing(prev, id => fs[id]?.type === "file"));
   }, [fs]);
+
+  // Remember what's open, so a reload comes back to it. Written as it changes
+  // rather than on the way out: `pagehide` is not reliably delivered on iOS,
+  // and this is a few hundred bytes of JSON.
+  //
+  // `fs` is deliberately not a dependency — it changes on every keystroke, and
+  // nothing here needs to be up to the millisecond. Reading it through the ref
+  // means the ids are filtered against a tree that may be a moment old, which
+  // costs at most one stale entry that the next change sweeps up.
+  //
+  // Two tabs share one entry, so the last one to change something wins. There
+  // is nothing to merge — a layout is what one window is showing — and the
+  // alternative, a per-tab store, would forget everything the moment the
+  // browser closed, which is the case this exists for.
+  useEffect(() => {
+    const tree = fsRef.current;
+    if (!workspaceLoaded.current || !tree) return;
+    saveWorkspace({
+      layout,
+      // Ids of things that no longer exist would otherwise pile up forever: a
+      // folder deleted here or on another device is never coming back to be
+      // expanded again.
+      collapsed: [...collapsed].filter(id => tree[id]?.type === "folder"),
+      textViews: Object.keys(textViews).filter(id => textViews[id] && tree[id]?.type === "file"),
+    });
+  }, [layout, collapsed, textViews]);
 
   // React to writes from other tabs.
   useEffect(
@@ -414,6 +487,15 @@ export function App() {
 
   const toggleView = (id: string) => setTextViews(prev => ({ ...prev, [id]: !prev[id] }));
   const selectedView = viewOf(selectedFile);
+
+  const toggleFolder = (id: string) =>
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      // `delete` reports whether it removed anything, which is the same
+      // question as "was this folder collapsed".
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   const handleSelectFile = (id: string) => {
     // `replace` on a phone: there's no tab strip to steer there, so opening a
@@ -526,6 +608,8 @@ export function App() {
         fs={fs}
         selectedId={selectedId}
         openIds={allOpenIds(layout)}
+        collapsed={collapsed}
+        onToggleFolder={toggleFolder}
         onSelectFile={handleSelectFile}
         onOpenBeside={wide ? handleOpenBeside : null}
         onCreate={handleCreate}

@@ -149,6 +149,7 @@ export default async function run(browser: Browser): Promise<number> {
 
   await context.close();
   await checkTouch(browser, checks);
+  await checkRestore(browser, checks);
   return checks.failures;
 }
 
@@ -187,6 +188,50 @@ async function checkTouch(browser: Browser, checks: Checks): Promise<void> {
   checks.ok(
     "the click after the press doesn't also open the file",
     (await page.locator(".mobile-topbar-title").innerText()) === before,
+  );
+
+  await context.close();
+}
+
+
+/**
+ * What a reload comes back to. `workspace.test.ts` pins the validation, but
+ * only a real browser has the part that actually matters: localStorage
+ * written as the layout changes, read back before the tree is drawn, and
+ * reconciled with a URL that names one of the files itself.
+ */
+async function checkRestore(browser: Browser, checks: Checks): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await openApp(context);
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+
+  await openFile(page, "welcome.md");
+  await openFile(page, "ideas.md");
+  await page.click('.tree-row.tree-folder:has-text("Projects")');
+  checks.ok("clicking a folder collapses it", (await page.locator('.tree-row:has-text("ideas.md")').count()) === 0);
+
+  // Ids, not labels: what has to come back is the file each tab points at,
+  // and two notes in different folders can read the same.
+  const before = (await tabIds(page)).join(",");
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  await page.waitForSelector(".tab-active", { timeout: 15_000 });
+
+  checks.ok("every open tab comes back after a reload", (await tabIds(page)).join(",") === before, (await tabIds(page)).join(","));
+  checks.ok(
+    "the tab that was showing is the one showing again",
+    (await page.locator(".tab-active").getAttribute("title")) === "Projects/ideas.md",
+    (await page.locator(".tab-active").getAttribute("title")) ?? "",
+  );
+  checks.ok("a collapsed folder comes back collapsed", (await page.locator('.tree-row:has-text("ideas.md")').count()) === 0);
+
+  // Expanding it again has to be remembered too, or the state is write-once.
+  await page.click('.tree-row.tree-folder:has-text("Projects")');
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  checks.ok(
+    "expanding it again is remembered as well",
+    await waitUntil("the folder to come back open", async () => (await page.locator('.tree-row:has-text("ideas.md")').count()) === 1),
   );
 
   await context.close();
