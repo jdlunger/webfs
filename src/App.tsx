@@ -3,6 +3,8 @@ import "./index.css";
 import {
   type FSNode,
   type FileSystem,
+  remapCreatedAt,
+  type CreatedAt,
   type SortBy,
   DEFAULT_SORT,
   canMove,
@@ -51,6 +53,7 @@ import {
   subscribeToChanges,
 } from "./storage";
 import { adoptContent, loadTree, projectTree } from "./tree";
+import { loadCreated, remapCreated, stampCreated } from "./createdAt";
 import { DrivePanel } from "./DrivePanel";
 import { type Workspace, initialCollapsed, loadWorkspace, saveWorkspace } from "./workspace";
 import { useDriveSync } from "./useDriveSync";
@@ -195,6 +198,13 @@ export function App() {
    */
   const [sortBy, setSortBy] = useState<SortBy>(DEFAULT_SORT);
 
+  /**
+   * When each file first appeared here, for the "Created" orders
+   * (`createdAt.ts`). Beside the tree rather than in it, because the tree is
+   * a projection of OPFS and OPFS has no creation time to project.
+   */
+  const [created, setCreated] = useState<CreatedAt>({});
+
   // Tabs and the split view are a large-screen affordance; a phone keeps
   // showing one file at a time, as it always has.
   const wide = useMediaQuery(WIDE_SCREEN);
@@ -221,6 +231,8 @@ export function App() {
   // otherwise close over the first render's state.
   const fsRef = useRef<FileSystem | null>(null);
   fsRef.current = fs;
+  const createdRef = useRef<CreatedAt>({});
+  createdRef.current = created;
   const openRef = useRef<string[]>([]);
   openRef.current = activeIds(layout);
   const storeRef = useRef(store);
@@ -251,11 +263,43 @@ export function App() {
   const baseContent = useRef(new Map<string, string>());
   const pending = useRef(new Map<string, { content: string; timer: ReturnType<typeof setTimeout> }>());
 
+  /**
+   * Files in `next` that weren't in the tree a moment ago, dated as having
+   * arrived now (`createdAt.ts`).
+   *
+   * Watching the tree covers every way a file can appear — created here,
+   * pasted as an image, pulled by a sync, written by another tab — where
+   * hooking each of those call sites would cover the ones anyone remembered.
+   *
+   * The *first* tree a drive produces is the baseline rather than an arrival,
+   * which is the whole reason this reads as "first seen here" and not "the
+   * day this feature shipped": a store that was already full when it landed
+   * keeps no dates at all, and an unknown date sorts last. A GitHub drive
+   * loads empty and fills from the pull, so there the two amount to the same
+   * thing — which is what makes a pulled file dated at all.
+   */
+  const noticeArrivals = useCallback((next: FileSystem) => {
+    const previous = fsRef.current;
+    if (previous === null) return;
+    const fresh = Object.values(next)
+      .filter(node => node.type === "file" && previous[node.id] === undefined && createdRef.current[node.id] === undefined)
+      .map(node => node.id);
+    if (fresh.length === 0) return;
+    const drive = driveRef.current;
+    void stampCreated(drive, fresh).then(dates => {
+      // A drive switch while that was in flight: those dates are about a
+      // filesystem this tab is no longer showing.
+      if (driveRef.current === drive) setCreated(prev => ({ ...prev, ...dates }));
+    });
+  }, []);
+
   /** Re-reads the drive's tree, which is the source of truth for structure. */
   const refreshTree = useCallback(async () => {
     const entries = await storeRef.current.walk();
-    setFs(prev => adoptContent(prev, projectTree(entries)));
-  }, []);
+    const next = projectTree(entries);
+    noticeArrivals(next);
+    setFs(prev => adoptContent(prev, next));
+  }, [noticeArrivals]);
 
   const flushWrite = useCallback(async (id: string) => {
     const queued = pending.current.get(id);
@@ -422,6 +466,7 @@ export function App() {
     setExternalEdits({});
     setTextViews({});
     setCollapsed(new Set());
+    setCreated({});
     // A fold still waiting on the drive being left must not land on the one
     // being arrived at, whose own workspace may say its folders are open.
     setFoldPending(false);
@@ -430,6 +475,16 @@ export function App() {
     setFs(null);
 
     let cancelled = false;
+
+    // Merged rather than assigned: the tree can load and notice arrivals
+    // before this read comes back, and assigning would drop what it learned.
+    // Nothing conflicts — a path already in hand was read back from these
+    // same rows — so which side wins doesn't matter, only that neither is
+    // lost.
+    void loadCreated(driveKey).then(dates => {
+      if (!cancelled) setCreated(prev => ({ ...dates, ...prev }));
+    });
+
     // Only the drive the URL actually names gets its file from the URL; a
     // switch made from the picker leaves the address bar pointing at the
     // drive being left until the effect below rewrites it.
@@ -788,7 +843,12 @@ export function App() {
     void mutate(async () => {
       await store.renameEntry(from, name);
       baseContent.current.delete(id);
-      remapTabs(id, idOf([...from.slice(0, -1), name]));
+      const to = idOf([...from.slice(0, -1), name]);
+      // Before `mutate` re-reads the tree, which would otherwise see the new
+      // path as a file that has just arrived and date it today.
+      await remapCreated(driveRef.current, id, to);
+      setCreated(prev => remapCreatedAt(prev, id, to));
+      remapTabs(id, to);
     });
   };
 
@@ -798,7 +858,10 @@ export function App() {
     void mutate(async () => {
       await store.moveEntry(from, segmentsOf(newParentId));
       baseContent.current.delete(id);
-      remapTabs(id, idOf([...segmentsOf(newParentId), from[from.length - 1]!]));
+      const to = idOf([...segmentsOf(newParentId), from[from.length - 1]!]);
+      await remapCreated(driveRef.current, id, to);
+      setCreated(prev => remapCreatedAt(prev, id, to));
+      remapTabs(id, to);
     });
   };
 
@@ -865,6 +928,7 @@ export function App() {
         collapsed={collapsed}
         onToggleFolder={toggleFolder}
         sortBy={sortBy}
+        created={created}
         onChangeSort={setSortBy}
         onSelectFile={handleSelectFile}
         onOpenBeside={wide ? handleOpenBeside : null}

@@ -71,12 +71,17 @@ export function getNodePath(id: string): string {
  * The orders the sidebar offers. Stored per drive (`workspace.ts`), so a new
  * value here has to survive being read back by a build that predates it —
  * `isSortBy` is what makes an unrecognised one fall back rather than break.
+ *
+ * Each date has both directions. `modified` is the odd name out: it means
+ * newest-first and predates there being a pair, and renaming it to
+ * `modified-desc` would quietly reset the order of everyone who had chosen
+ * it — a stored value this build doesn't know falls back to the default.
  */
-export type SortBy = "name" | "name-desc" | "modified";
+export type SortBy = "name" | "name-desc" | "modified" | "modified-asc" | "created" | "created-asc";
 
 export const DEFAULT_SORT: SortBy = "name";
 
-const SORTS: readonly SortBy[] = ["name", "name-desc", "modified"];
+const SORTS: readonly SortBy[] = ["name", "name-desc", "modified", "modified-asc", "created", "created-asc"];
 
 export function isSortBy(value: unknown): value is SortBy {
   return typeof value === "string" && (SORTS as readonly string[]).includes(value);
@@ -85,36 +90,98 @@ export function isSortBy(value: unknown): value is SortBy {
 export const SORT_LABELS: Record<SortBy, string> = {
   name: "Name (A–Z)",
   "name-desc": "Name (Z–A)",
-  modified: "Last modified",
+  modified: "Modified (newest first)",
+  "modified-asc": "Modified (oldest first)",
+  created: "Created (newest first)",
+  "created-asc": "Created (oldest first)",
 };
 
+/**
+ * When each file first appeared on this device, path → time (`createdAt.ts`).
+ *
+ * It's passed to the sort rather than hung on `FSNode`, because a node is a
+ * projection of what's in OPFS and this isn't in OPFS — there is no creation
+ * time in the filesystem to project. Keeping it beside the tree rather than
+ * inside it is what stops the record having two sources of truth.
+ */
+export type CreatedAt = Readonly<Record<string, number>>;
+
+/**
+ * The same map after `from` was renamed or moved to `to` — the in-memory
+ * mirror of what `remapCreated` does to the stored rows, so a rename doesn't
+ * have to wait for a round trip to IndexedDB to show the right order.
+ */
+export function remapCreatedAt(created: CreatedAt, from: string, to: string): CreatedAt {
+  const next: Record<string, number> = {};
+  let changed = false;
+  for (const [path, at] of Object.entries(created)) {
+    const moved = remapId(path, from, to);
+    if (moved !== path) changed = true;
+    next[moved] = at;
+  }
+  return changed ? next : created;
+}
+
 const byName = (a: FSNode, b: FSNode) => a.name.localeCompare(b.name);
+
+/**
+ * Orders files by a time, with ties broken by name so the list is stable.
+ *
+ * **An unknown time sorts last in *both* directions**, which is the one rule
+ * here worth stating out loud. Standing in a missing date with ±Infinity
+ * would work for one direction and put every dateless file at the very top of
+ * the other — and "unknown" is not "the oldest thing here" any more than it
+ * is "the newest". Files with no creation date are the common case on a vault
+ * that predates this being recorded, so an order that buries them is right
+ * and an order that leads with them is unusable.
+ */
+function byTime(timeOf: (node: FSNode) => number | undefined, newestFirst: boolean) {
+  return (a: FSNode, b: FSNode) => {
+    const at = timeOf(a);
+    const bt = timeOf(b);
+    if (at === undefined || bt === undefined) {
+      return at === bt ? byName(a, b) : at === undefined ? 1 : -1;
+    }
+    return at === bt ? byName(a, b) : newestFirst ? bt - at : at - bt;
+  };
+}
 
 /**
  * Folders always come first and always by name, whatever the order is.
  *
  * Interleaving them by date would need a timestamp they don't have (OPFS
- * gives directories none), and a tree whose folders move around as their
- * contents are edited is harder to navigate than one where they sit still.
- * So the order chosen applies to the files, which is where it was aimed.
+ * gives directories none, and nothing records a creation date for one), and a
+ * tree whose folders move around as their contents are edited is harder to
+ * navigate than one where they sit still. So the order chosen applies to the
+ * files, which is where it was aimed.
  */
-function comparator(sortBy: SortBy): (a: FSNode, b: FSNode) => number {
-  if (sortBy === "name-desc") return (a, b) => (a.type === "folder" ? byName(a, b) : byName(b, a));
-  if (sortBy === "modified") {
-    return (a, b) => {
-      if (a.type === "folder") return byName(a, b);
-      // A file whose timestamp didn't come back sorts last rather than first:
-      // "unknown" is not "brand new".
-      const at = a.lastModified ?? -Infinity;
-      const bt = b.lastModified ?? -Infinity;
-      return at === bt ? byName(a, b) : bt - at;
-    };
+function comparator(sortBy: SortBy, created: CreatedAt): (a: FSNode, b: FSNode) => number {
+  const forFiles = (compare: (a: FSNode, b: FSNode) => number) => (a: FSNode, b: FSNode) =>
+    a.type === "folder" ? byName(a, b) : compare(a, b);
+
+  switch (sortBy) {
+    case "name-desc":
+      return forFiles((a, b) => byName(b, a));
+    case "modified":
+      return forFiles(byTime(node => node.lastModified, true));
+    case "modified-asc":
+      return forFiles(byTime(node => node.lastModified, false));
+    case "created":
+      return forFiles(byTime(node => created[node.id], true));
+    case "created-asc":
+      return forFiles(byTime(node => created[node.id], false));
+    default:
+      return byName;
   }
-  return byName;
 }
 
-export function childrenOf(fs: FileSystem, parentId: string, sortBy: SortBy = DEFAULT_SORT): FSNode[] {
-  const compare = comparator(sortBy);
+export function childrenOf(
+  fs: FileSystem,
+  parentId: string,
+  sortBy: SortBy = DEFAULT_SORT,
+  created: CreatedAt = {},
+): FSNode[] {
+  const compare = comparator(sortBy, created);
   return Object.values(fs)
     .filter(n => n.parentId === parentId)
     .sort((a, b) => {

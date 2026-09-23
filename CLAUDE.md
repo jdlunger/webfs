@@ -13,6 +13,7 @@ live), `storage.ts` (thin OPFS layer, rooted at a drive's mount), `tree.ts`
 (projects a drive's folder into the in-memory record), `fs.ts` (pure queries
 over that record), `panes.ts` (which files are open, in which pane),
 `workspace.ts` (that layout remembered per drive in localStorage),
+`createdAt.ts` (when each file first appeared here, in IndexedDB),
 `merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
 (`bun test`) plus `browser/` for what only a real browser can exercise
 (`bun run browser`).
@@ -297,9 +298,21 @@ The two buttons at the top of the sidebar. `searchTree` and `childrenOf` in
   moment, and coming back to a tree with most of it missing and no memory of
   why is its own bug report.
 - **Folders always sort first and always by name.** OPFS gives a directory no
-  timestamp, so there is nothing to order them by under "Last modified", and
+  timestamp and nothing records a creation date for one, so there is nothing
+  to order them by under either date, and
   folders that shuffle about as their contents are edited are harder to
   navigate than ones that stay put. The chosen order applies to files.
+- **Both dates sort both ways, and an unknown date sorts last in *both*.**
+  That is the one rule in `byTime` worth reading twice: standing a missing
+  date in as ±Infinity works for one direction and puts every dateless file at
+  the top of the other. "Unknown" is not the oldest thing here any more than
+  it is the newest, and files with no creation date are the common case on a
+  store that predates one being recorded — so an order that buries them is
+  right and an order that leads with them is unusable.
+- **`modified` is the odd id out**, meaning newest-first while its partner is
+  `modified-asc`. It predates there being a pair, and renaming it to
+  `modified-desc` would quietly reset the order of everyone who had chosen it,
+  since a stored value this build doesn't know falls back to the default.
 - **`lastModified` costs a `getFile()` per file on every walk.** That is the
   price of being able to sort by date at all — nothing else here records one,
   and a timestamp kept on the side would be a second index to hold in step
@@ -319,6 +332,62 @@ The two buttons at the top of the sidebar. `searchTree` and `childrenOf` in
   buttons and a title don't fit across it — what wrapped was `+ File` and
   `+ Folder`, folded in half. A drawer full of file names doesn't need to be
   labelled.
+
+### Creation dates (`createdAt.ts`)
+
+OPFS has no creation time — a `File` carries `lastModified` and nothing else,
+and a `FileSystemFileHandle` has no metadata API at all. Checked in a real
+browser, not assumed. So the "Created" orders read a record webfs keeps
+itself, in IndexedDB, keyed by drive and path.
+
+- **It is "first seen here", not "created".** A note written on a laptop and
+  pulled onto a phone is dated when it reached the phone, and a store that was
+  already full when this shipped has no dates at all. Filling those in from
+  `lastModified` is the obvious move and is exactly what makes "Created" a
+  second, slightly wrong copy of "Modified" — unknown sorts last instead.
+- **Arrivals are noticed by watching the tree** (`noticeArrivals` in
+  `App.tsx`), not by hooking the places files are made. A file can appear
+  because it was created here, pasted as an image, pulled by a sync or written
+  by another tab; one diff against the previous tree covers all four, where
+  hooking call sites covers the ones someone remembered. The *first* tree a
+  drive produces is the baseline rather than a pile of arrivals — which is
+  what makes a pre-existing vault undated, and what makes a GitHub drive's
+  files dated, since that one loads empty and fills from the pull.
+- **A rename has to be carried across before the refresh sees it**
+  (`remapCreated`, awaited inside `mutate`). Otherwise the old path vanishing
+  and the new one appearing reads as a deletion and an arrival, and the date
+  restarts at today. `remapCreatedAt` is the same rule applied to the map in
+  memory, so the order doesn't wait for a round trip; both go through
+  `remapId`, like the tabs and the collapsed folders.
+- **IndexedDB rather than localStorage**, because this grows with the number
+  of files rather than being a handful of settings, and because it's written
+  from a tree refresh where a synchronous JSON round trip of the whole thing
+  would be felt. Still per-device, for the reason everything else outside OPFS
+  is: OPFS is what sync pushes to GitHub, and a sidecar of timestamps has no
+  business in someone's notes repository.
+- **Writing is add-if-absent, and nothing ever deletes.** Two cases depend on
+  the first: another tab that noticed the same new file a moment earlier has
+  already recorded it, and a device whose OPFS was evicted re-pulls its whole
+  store — where overwriting would replace every real date with the moment of
+  the refill. `stampCreated` reads the existing date back rather than
+  reporting nothing, so both tabs agree without a reload. The tempting cleanup
+  — dropping dates for files that have left the tree — is the same eviction
+  case wearing a different hat, and it would take every real date with it
+  permanently. The cost of not doing it is a path deleted and later reused
+  inheriting the old date, and a row per file ever seen.
+- **A blocked IndexedDB costs the dates and nothing else.** Every call resolves
+  to an empty result rather than rejecting, so a private window loses the
+  "Created" orders and keeps the app. That's the opposite of what
+  `opfsAvailable` does, because the store failing has nothing to fall back to
+  and this does.
+- Covered by `tree.test.ts` for the ordering (both directions, unknown last,
+  and the rename remap) and by `bun run browser sidebar` and `sync` for the
+  half that needs a real IndexedDB: a seeded file has no date, a file made
+  here gets one, a rename carries it, and a file pulled from GitHub is dated
+  when it arrived. `createdIndex` in the harness reads the rows straight out
+  of the database rather than inferring them from the order on screen, since
+  two undated files fall back to name — which is also what the default order
+  gives, so the order alone can pass for the wrong reason.
 
 ## Mobile (iOS Safari) considerations
 

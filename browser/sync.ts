@@ -5,24 +5,7 @@
  * Milkdown editor, and sync.ts reconciling between them.
  */
 import type { Browser } from "playwright";
-import {
-  Checks,
-  chooseFromContextMenu,
-  FakeGitHub,
-  asText,
-  connectedContext,
-  expandFolder,
-  openApp,
-  openFile,
-  opfsFiles,
-  readOpfsFile,
-  setOpfs,
-  writeOpfsFile,
-  statusText,
-  syncAndSettle,
-  typeInEditor,
-  waitUntil,
-} from "./harness";
+import { asText, Checks, chooseFromContextMenu, connectedContext, createdIndex, expandFolder, FakeGitHub, openApp, openFile, opfsFiles, readOpfsFile, setOpfs, statusText, syncAndSettle, typeInEditor, waitUntil, writeOpfsFile } from "./harness";
 
 export default async function run(browser: Browser): Promise<number> {
   const checks = new Checks("two-way sync");
@@ -48,6 +31,16 @@ export default async function run(browser: Browser): Promise<number> {
     asText(local["Shared/from-github.md"] ?? "") === "# written on another device",
     Object.keys(local).join(", "),
   );
+  // OPFS has no creation time, so a pulled file's only date is the one this
+  // device writes down when it arrives — which is the case the whole
+  // "Created" order exists for, since a synced drive is how most files get
+  // here in the first place.
+  const dates = await waitUntil("a creation date for the pulled file", async () => {
+    const index = await createdIndex(page, "me/notes");
+    return index["Shared/from-github.md"] !== undefined;
+  });
+  checks.ok("a file pulled from GitHub is dated when it arrived here", dates, JSON.stringify(await createdIndex(page, "me/notes")));
+
   // A drive backed by a repository holds the repository and nothing else: no
   // starter notes are seeded into one, so this is what it should have.
   checks.ok(

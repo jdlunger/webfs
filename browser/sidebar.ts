@@ -4,11 +4,12 @@
  * Both are decided by pure code (`searchTree` and `childrenOf` in `fs.ts`,
  * covered by `tree.test.ts`), so what's left for a browser is everything that
  * touches the outside: the timestamps sorting reads come from OPFS, which has
- * no headless stand-in, and the order chosen is remembered through a real
- * reload and a real localStorage.
+ * no headless stand-in, the creation dates come from IndexedDB, which has
+ * none either, and the order chosen is remembered through a real reload and a
+ * real localStorage.
  */
 import type { Browser, Page } from "playwright";
-import { Checks, openApp, openFile, typeInEditor, waitUntil } from "./harness";
+import { Checks, chooseFromContextMenu, createdIndex, openApp, openFile, typeInEditor, waitUntil } from "./harness";
 
 /** The tree's rows, top to bottom — which is what an order is. */
 const rowNames = (page: Page) => page.locator(".sidebar-tree .tree-name").allInnerTexts();
@@ -122,13 +123,13 @@ export default async function run(browser: Browser): Promise<number> {
   await typeInEditor(page, "\n\ntouched, so this is now the most recently written file");
   // The editor's save is debounced; the tree is re-read after it lands.
   await waitUntil("the edit to be saved", async () => {
-    await sortBy(page, "Last modified");
+    await sortBy(page, "Modified (newest first)");
     const names = await rowNames(page);
     const sorted = names.join("/") === "Notes/welcome.md/todo.md/Projects/ideas.md";
     await sortBy(page, "Name (A–Z)");
     return sorted;
   });
-  await sortBy(page, "Last modified");
+  await sortBy(page, "Modified (newest first)");
   checks.ok(
     "by last modified, the file just edited comes first",
     (await rowNames(page)).join("/") === "Notes/welcome.md/todo.md/Projects/ideas.md",
@@ -139,14 +140,14 @@ export default async function run(browser: Browser): Promise<number> {
 
   checks.ok(
     "the button says which order is in effect",
-    ((await page.locator(SORT).getAttribute("title")) ?? "").includes("Last modified"),
+    ((await page.locator(SORT).getAttribute("title")) ?? "").includes("Modified (newest first)"),
     (await page.locator(SORT).getAttribute("title")) ?? "",
   );
   await page.click(SORT);
   await page.waitForSelector(".context-menu", { timeout: 5_000 });
   checks.ok(
     "and the menu marks it",
-    (await page.locator(".context-menu-item.is-selected").innerText()).includes("Last modified"),
+    (await page.locator(".context-menu-item.is-selected").innerText()).includes("Modified (newest first)"),
   );
   await page.keyboard.press("Escape");
 
@@ -162,6 +163,55 @@ export default async function run(browser: Browser): Promise<number> {
   );
   // A search is a moment's act, not a state to come back to.
   checks.ok("but not with a search field open", (await page.locator(".sidebar-search-input").count()) === 0);
+
+  // --- creation dates, which only exist because this app wrote them down -------
+
+  // The seeded files were already in the store the first time the tree was
+  // read, so nothing watched them arrive and they have no date. A file made
+  // here does — that is the difference the whole feature rests on.
+  const seeded = await createdIndex(page, "opfs/notes");
+  checks.ok(
+    "the files that were already there have no creation date",
+    Object.keys(seeded).length === 0,
+    JSON.stringify(seeded),
+  );
+
+  await page.click('.sidebar-header-actions button[title="New file"]');
+  await waitUntil("the new file", async () => (await rowNames(page)).includes("untitled.md"));
+  const dated = await waitUntil("a recorded creation date", async () => {
+    const index = await createdIndex(page, "opfs/notes");
+    return index["untitled.md"] !== undefined;
+  });
+  checks.ok("a file created here is dated when it appeared", dated, JSON.stringify(await createdIndex(page, "opfs/notes")));
+
+  await sortBy(page, "Created (newest first)");
+  checks.ok(
+    "by created, the only dated file leads and the undated ones follow by name",
+    (await rowNames(page)).join("/") === "Notes/todo.md/welcome.md/Projects/ideas.md/untitled.md",
+    (await rowNames(page)).join(", "),
+  );
+
+  // Reversing must not promote the undated files over the dated one: unknown
+  // is not "the oldest thing here" any more than it is the newest.
+  await sortBy(page, "Created (oldest first)");
+  checks.ok(
+    "reversing it keeps the undated files last rather than lifting them to the top",
+    (await rowNames(page)).join("/") === "Notes/todo.md/welcome.md/Projects/ideas.md/untitled.md",
+    (await rowNames(page)).join(", "),
+  );
+
+  // A rename is the old path vanishing and a new one appearing, so without
+  // the date being carried across the file would be dated today instead.
+  const stamped = (await createdIndex(page, "opfs/notes"))["untitled.md"];
+  await chooseFromContextMenu(page, '.tree-row:has-text("untitled.md")', "Rename");
+  await page.fill(".rename-input", "renamed.md");
+  await page.keyboard.press("Enter");
+  await waitUntil("the rename", async () => (await rowNames(page)).includes("renamed.md"));
+  const carried = await waitUntil("the date to follow the rename", async () => {
+    const index = await createdIndex(page, "opfs/notes");
+    return index["renamed.md"] === stamped && index["untitled.md"] === undefined;
+  });
+  checks.ok("a rename carries the creation date with it", carried, JSON.stringify(await createdIndex(page, "opfs/notes")));
 
   await context.close();
   return checks.failures;

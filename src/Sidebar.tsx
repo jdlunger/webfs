@@ -12,6 +12,7 @@ import {
 import {
   type FileSystem,
   type FSNode,
+  type CreatedAt,
   type SortBy,
   ROOT_ID,
   SORT_LABELS,
@@ -47,6 +48,8 @@ interface SidebarProps {
    * reason `collapsed` is: it outlives the rows and is remembered per drive.
    */
   sortBy: SortBy;
+  /** When each file first appeared here; only the "Created" orders read it. */
+  created: CreatedAt;
   onChangeSort: (sortBy: SortBy) => void;
   onSelectFile: (id: string) => void;
   /** Opens a file in the other pane. Null on narrow screens, which don't split. */
@@ -348,7 +351,7 @@ export function Sidebar(props: SidebarProps) {
           if (id) props.onMove(id, ROOT_ID);
         }}
       >
-        {childrenOf(props.fs, ROOT_ID, props.sortBy)
+        {childrenOf(props.fs, ROOT_ID, props.sortBy, props.created)
           .filter(node => !visible || visible.has(node.id))
           .map(node => (
             <TreeNode
@@ -360,6 +363,7 @@ export function Sidebar(props: SidebarProps) {
               openIds={props.openIds}
               collapsed={props.collapsed}
               sortBy={props.sortBy}
+              created={props.created}
               visible={visible}
               renamingId={renamingId}
               onToggleFolder={props.onToggleFolder}
@@ -389,6 +393,7 @@ interface TreeNodeProps {
   openIds: string[];
   collapsed: ReadonlySet<string>;
   sortBy: SortBy;
+  created: CreatedAt;
   /** Ids a search left standing, or null when nothing is being searched for. */
   visible: ReadonlySet<string> | null;
   renamingId: string | null;
@@ -401,7 +406,7 @@ interface TreeNodeProps {
 }
 
 function TreeNode(props: TreeNodeProps) {
-  const { node, depth, fs, selectedId, openIds, collapsed, sortBy, visible, renamingId, onSelectFile, onRename, onMove, onStartRename } =
+  const { node, depth, fs, selectedId, openIds, collapsed, sortBy, created, visible, renamingId, onSelectFile, onRename, onMove, onStartRename } =
     props;
   // A folder is open unless it's been closed, so a folder that appears later —
   // created here, or pulled by a sync — shows its contents rather than hiding
@@ -492,7 +497,7 @@ function TreeNode(props: TreeNodeProps) {
   const rowTrigger = renaming ? {} : menuTrigger;
 
   if (node.type === "folder") {
-    const kids = childrenOf(fs, node.id, sortBy).filter(child => !visible || visible.has(child.id));
+    const kids = childrenOf(fs, node.id, sortBy, created).filter(child => !visible || visible.has(child.id));
     return (
       <div>
         <div
@@ -519,6 +524,7 @@ function TreeNode(props: TreeNodeProps) {
               openIds={openIds}
               collapsed={collapsed}
               sortBy={sortBy}
+              created={created}
               visible={visible}
               renamingId={renamingId}
               onToggleFolder={props.onToggleFolder}

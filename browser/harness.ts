@@ -165,6 +165,38 @@ export function opfsFiles(page: Page, drive?: string): Promise<Record<string, st
 export const asText = (base64: string) => Buffer.from(base64, "base64").toString("utf-8");
 
 /**
+ * The creation dates this device has recorded for a drive, as path → time.
+ *
+ * Read straight out of IndexedDB rather than inferred from the order the
+ * sidebar happens to be in: an order can come out right for the wrong reason
+ * (two files with no date at all fall back to name, which is also what the
+ * default order gives), and what is being tested here is that something was
+ * actually written down.
+ */
+export function createdIndex(page: Page, drive: string): Promise<Record<string, number>> {
+  return page.evaluate(
+    driveId =>
+      new Promise<Record<string, number>>(resolve => {
+        const open = indexedDB.open("webfs");
+        open.onerror = () => resolve({});
+        open.onsuccess = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains("created")) return resolve({});
+          const request = db.transaction("created", "readonly").objectStore("created").index("drive").getAll(driveId);
+          request.onerror = () => resolve({});
+          request.onsuccess = () =>
+            resolve(
+              Object.fromEntries(
+                (request.result as Array<{ path: string; at: number }>).map(row => [row.path, row.at]),
+              ),
+            );
+        };
+      }),
+    drive,
+  );
+}
+
+/**
  * Writes into a drive from outside the app, to stand in for whatever changed
  * it — another tab, a sync landing, a vault copied onto the device. Paths are
  * drive-relative, like `opfsFiles`'s, and with no drive named it writes into

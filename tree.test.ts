@@ -12,6 +12,7 @@ import {
   ROOT_ID,
   canMove,
   childrenOf,
+  remapCreatedAt,
   findNodeByPath,
   getNodePath,
   idOf as idOf2,
@@ -138,11 +139,62 @@ test("sorting reorders a folder's files but never lifts one above a folder", () 
   expect(names("name")).toEqual(["Sub", "a.md", "z.md"]);
   expect(names("name-desc")).toEqual(["Sub", "z.md", "a.md"]);
   expect(names("modified")).toEqual(["Sub", "z.md", "a.md"]);
+  // A folder stays put and stays first whichever way the files are turned.
+  expect(names("modified-asc")).toEqual(["Sub", "a.md", "z.md"]);
 });
 
-test("a file with no modified time sorts last, since unknown isn't new", () => {
+test("each date sorts both ways", () => {
+  const fs = projectTree([dir("Notes", [timed("a.md", 100), timed("z.md", 900)])]);
+  const notes = idOf(fs, "/Notes");
+  const a = idOf(fs, "/Notes/a.md");
+  const z = idOf(fs, "/Notes/z.md");
+  const names = (sortBy: SortBy) => childrenOf(fs, notes, sortBy, { [a]: 900, [z]: 100 }).map(n => n.name);
+
+  expect(names("modified")).toEqual(["z.md", "a.md"]);
+  expect(names("modified-asc")).toEqual(["a.md", "z.md"]);
+  // Created runs the other way round here, so an order that quietly read the
+  // modified time would pass the two above and fail these.
+  expect(names("created")).toEqual(["a.md", "z.md"]);
+  expect(names("created-asc")).toEqual(["z.md", "a.md"]);
+});
+
+test("a file with no date sorts last in *both* directions, since unknown isn't new — or old", () => {
   const fs = projectTree([dir("Notes", [file("mystery.md"), timed("old.md", 1)])]);
-  expect(childrenOf(fs, idOf(fs, "/Notes"), "modified").map(n => n.name)).toEqual(["old.md", "mystery.md"]);
+  const notes = idOf(fs, "/Notes");
+  const old = idOf(fs, "/Notes/old.md");
+  const names = (sortBy: SortBy) => childrenOf(fs, notes, sortBy, { [old]: 1 }).map(n => n.name);
+
+  // Reversing the order must not promote the unknown one to the top, which
+  // is what standing a missing date in as ±Infinity would do.
+  expect(names("modified")).toEqual(["old.md", "mystery.md"]);
+  expect(names("modified-asc")).toEqual(["old.md", "mystery.md"]);
+  expect(names("created")).toEqual(["old.md", "mystery.md"]);
+  expect(names("created-asc")).toEqual(["old.md", "mystery.md"]);
+});
+
+test("files with no date at all fall back to name rather than to nothing", () => {
+  const fs = projectTree([dir("Notes", [file("z.md"), file("a.md")])]);
+  const notes = idOf(fs, "/Notes");
+  expect(childrenOf(fs, notes, "created").map(n => n.name)).toEqual(["a.md", "z.md"]);
+  expect(childrenOf(fs, notes, "created-asc").map(n => n.name)).toEqual(["a.md", "z.md"]);
+});
+
+test("a rename carries a creation date with it, a folder's whole subtree included", () => {
+  const dates = { "Notes/todo.md": 100, "Notes/Sub/deep.md": 200, "Other/keep.md": 300 };
+
+  expect(remapCreatedAt(dates, "Notes/todo.md", "Notes/done.md")).toEqual({
+    "Notes/done.md": 100,
+    "Notes/Sub/deep.md": 200,
+    "Other/keep.md": 300,
+  });
+  // A folder moving takes everything under it along: prefix in, prefix out.
+  expect(remapCreatedAt(dates, "Notes", "Archive/Notes")).toEqual({
+    "Archive/Notes/todo.md": 100,
+    "Archive/Notes/Sub/deep.md": 200,
+    "Other/keep.md": 300,
+  });
+  // The same object back when nothing moved, so a render keyed on it settles.
+  expect(remapCreatedAt(dates, "Nothing", "Else")).toBe(dates);
 });
 
 test("an empty query means the whole tree, not an empty one", () => {
