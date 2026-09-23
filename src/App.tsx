@@ -55,11 +55,23 @@ import {
 import { adoptContent, loadTree, projectTree } from "./tree";
 import { loadCreated, remapCreated, stampCreated } from "./createdAt";
 import { DrivePanel } from "./DrivePanel";
+import { AcceptDriveDialog } from "./AcceptDrive";
+import { parseShareLink } from "./shareLink";
 import { type Workspace, initialCollapsed, loadWorkspace, saveWorkspace } from "./workspace";
 import { useDriveSync } from "./useDriveSync";
 import type { SyncResult } from "./sync";
 import { loadDrives, loadLastDrive, markSeeded, saveDrives, saveLastDrive, shouldSeed } from "./driveConfig";
-import { DRIVES_DIR, describeDrive, driveId, driveUrl, findDrive, mountOf, parseDrivePath, type Drive } from "./drives";
+import {
+  DRIVES_DIR,
+  describeDrive,
+  driveId,
+  driveUrl,
+  findDrive,
+  mountOf,
+  parseDrivePath,
+  type Drive,
+  type GitHubDrive,
+} from "./drives";
 
 /** Content saves coalesce over this window rather than firing per keystroke. */
 const WRITE_DEBOUNCE_MS = 400;
@@ -84,6 +96,26 @@ function restoreRedirectedPath(): void {
   if (redirect === null) return;
   window.history.replaceState(null, "", BASE_PATH + redirect);
 }
+
+/**
+ * A drive offered by a share link, taken out of the URL before anything reads
+ * it.
+ *
+ * The fragment holds a write-scoped token in full (see shareLink.ts), so the
+ * first thing done with it is to get it out of the address bar — and so out
+ * of the history entry, out of whatever gets bookmarked next, and off the
+ * screen of anyone looking at it. Captured before `restoreRedirectedPath`,
+ * which rewrites the URL without a fragment and would otherwise drop it.
+ *
+ * Nothing is added here: this only *offers*. `AcceptDriveDialog` asks.
+ */
+function takeInvitation(): GitHubDrive | null {
+  const offered = parseShareLink(window.location.hash);
+  if (offered) window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  return offered;
+}
+
+const invitation = takeInvitation();
 
 restoreRedirectedPath();
 
@@ -156,6 +188,21 @@ export function App() {
    * that no longer exists.
    */
   const [{ drives, activeId: activeDriveId }, setDrives] = useState(initialDrives);
+  /** The share link this tab was opened with, until it's accepted or dismissed. */
+  const [invited, setInvited] = useState(invitation);
+
+  // A share link tapped while webfs is already open changes only the
+  // fragment, which is a navigation the browser handles without reloading —
+  // so the module-level read above never runs again. Ordinary enough to need
+  // covering: the link is in a note, or a chat app reuses the tab.
+  useEffect(() => {
+    const onHashChange = () => {
+      const offered = takeInvitation();
+      if (offered) setInvited(offered);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [fs, setFs] = useState<FileSystem | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [layout, setLayout] = useState<PaneLayout>(() => singlePane(null));
@@ -948,6 +995,20 @@ export function App() {
           />
         }
       />
+      {invited && (
+        <AcceptDriveDialog
+          drive={invited}
+          drives={drives}
+          onAccept={accepted => {
+            setInvited(null);
+            // Already here: go to it rather than replacing what's stored. A
+            // link can't know whether this device's token is the better one.
+            if (findDrive(drives, driveId(accepted))) handleSelectDrive(driveId(accepted));
+            else handleAddDrive(accepted);
+          }}
+          onClose={() => setInvited(null)}
+        />
+      )}
       <div className="panes">
         {!drive || !fs ? (
           <div className="pane pane-focused">

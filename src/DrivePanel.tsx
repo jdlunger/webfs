@@ -12,6 +12,7 @@ import {
 } from "./drives";
 import { listNames, rootStore } from "./storage";
 import type { DriveSync } from "./useDriveSync";
+import { ShareDialog } from "./ShareDialog";
 
 /**
  * The drive switcher at the foot of the sidebar, and the dialog behind it.
@@ -317,6 +318,7 @@ function DriveDialog({
   onClose: () => void;
 }) {
   const existing = editing === "new" ? null : editing;
+  const [sharing, setSharing] = useState(false);
   const [kind, setKind] = useState<DriveKind>(existing?.kind ?? "opfs");
   const [name, setName] = useState(existing?.kind === "opfs" ? existing.name : "");
   const [repository, setRepository] = useState(existing?.kind === "github" ? `${existing.owner}/${existing.repo}` : "");
@@ -475,6 +477,13 @@ function DriveDialog({
               Remove drive
             </button>
           )}
+          {/* Saved drives only: a share link carries the token as it is
+              stored, and what's in the form hasn't been checked yet. */}
+          {existing?.kind === "github" && (
+            <button className="drive-share" onClick={() => setSharing(true)}>
+              Share…
+            </button>
+          )}
           <span className="modal-spacer" />
           <button onClick={onClose}>Cancel</button>
           <button className="modal-primary" disabled={checking} onClick={() => void save()}>
@@ -482,6 +491,7 @@ function DriveDialog({
           </button>
         </div>
       </div>
+      {sharing && existing?.kind === "github" && <ShareDialog drive={existing} onClose={() => setSharing(false)} />}
     </div>
   );
 }

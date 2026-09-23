@@ -13,6 +13,7 @@
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "7.22.1",
     "bun-plugin-tailwind": "^0.1.2",
+    "qrcode-generator": "^2.0.4",
     "react": "^19",
     "react-dom": "^19",
     "tailwindcss": "^4.1.11"

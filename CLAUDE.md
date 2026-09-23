@@ -490,6 +490,62 @@ mount point, plus a remote for the kind that has one.
   the local store, and now a GitHub drive starts empty. Worth knowing before
   someone expects "point webfs at a new repo" to upload their notes.
 
+## Sharing a drive (`shareLink.ts`)
+
+`shareLink.ts` (pure, `shareLink.test.ts`), `ShareDialog.tsx` (the QR code and
+the link), `AcceptDrive.tsx` (what the other device sees), and the capture at
+the top of `App.tsx`. Driven end to end by `bun run browser share`.
+
+A GitHub drive is a repository, a branch and a token. The first two are short;
+the third is 90-odd unguessable characters, which is not something anyone is
+going to retype on a phone. **Share…** in a GitHub drive's settings shows a QR
+code of a link carrying all three.
+
+- **The link *is* the token.** Not a reference to it, not a pairing code — the
+  token itself, in the URL. Anyone who reads the link or photographs the QR
+  code has write access until it's revoked. That is inherent to a
+  backend-less app: no server means no short-lived secret to exchange, and no
+  session to exchange it for. Both dialogs say so rather than implying
+  otherwise, and `SHARE_WARNING` is that sentence.
+- **It goes in the fragment, never the query string.** A `#` fragment is not
+  sent to the server, so it stays out of GitHub Pages' access logs and out of
+  the `Referer` on any link clicked afterwards. `?token=` would be in both.
+  Highest-value decision here and it costs nothing; `shareLink.test.ts` pins
+  it by asserting the token appears after the `#` and nowhere before it.
+- **The receiving device strips it before anything else reads the URL**
+  (`takeInvitation`, called at module scope in `App.tsx`, ahead of
+  `restoreRedirectedPath` — which rewrites the URL without a fragment and
+  would otherwise drop it). So the token never sits in the address bar, the
+  history entry, or whatever gets bookmarked next. The browser suite asserts
+  this on the real `window.location`, because it is a claim about history
+  rather than about a return value.
+- **It asks before it stores.** The link has everything needed to add the
+  drive silently, and deliberately doesn't: opening a link is not the same act
+  as granting a browser write access to a repository, and only the person
+  holding the phone knows whether they're the same thing this time. The
+  confirmation costs one tap and is where the QR code's "anyone who
+  photographs this" stops being theoretical.
+- **A link for a drive already here opens it rather than re-adding it.** The
+  dialog says "Open" instead of "Add", and nothing is stored — a link can't
+  know whether this device's existing token is the better one, so it doesn't
+  get to replace it.
+- **`hashchange` is handled, not just the initial load.** A share link tapped
+  while webfs is already open changes only the fragment, which the browser
+  serves without reloading, so the module-level read never runs again. That's
+  an ordinary case — the link is in a note, or a chat app reuses the tab — and
+  the browser suite caught it as a hang rather than anyone reasoning it out.
+- **The QR is drawn as SVG elements from `isDark()`**, not the library's
+  injected markup, which keeps it out of `dangerouslySetInnerHTML`. It is
+  black on white in **both** themes with a four-module quiet zone: scanners
+  expect dark-on-light, and a code that politely inverted itself in dark mode
+  would be a code that sometimes doesn't scan.
+- **The button is in the drive's settings dialog, not the strip.** The strip
+  is already four controls wide on a phone, and settings is where the token
+  being handed over is on screen anyway. Offered only for a *saved* GitHub
+  drive: what's in the form hasn't been checked yet.
+- **`qrcode-generator`** is the one dependency this added — MIT, no deps of
+  its own, about 47KB in the bundle.
+
 ## Storage (OPFS) and multiple tabs
 
 **OPFS is the only store, and the directory tree is the filesystem.**
@@ -1028,7 +1084,7 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
   (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `wikilinks`,
-  `vault`, `view`, `names`). The dev server is started by the
+  `vault`, `view`, `names`, `share`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
@@ -1069,6 +1125,10 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   waiting on the asset alone catches the note mid-write.
 - **`opfsFiles` skips entries that vanish under it.** The app writes while
   the walker reads; a half-created file is not an answer worth returning.
+- **Read stored JSON by parsing it, not by matching a substring.** A drive is
+  `{owner: "me", repo: "notes"}` in the registry, so asserting that the JSON
+  "contains me/notes" is an assertion that passes whatever happens — which two
+  checks in the `share` suite did until the run that should have failed didn't.
 - **`opfsFiles` reports names as OPFS holds them, which is escaped.** It walks
   the directory rather than going through `storage.ts`, so a non-ASCII path
   comes back as `Einf%C3%BChrung/...` — that is the point, since it is the only

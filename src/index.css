@@ -1184,6 +1184,100 @@ body.resizing-sidebar {
   color: #e2857a !important;
 }
 
+/* --- sharing a drive ----------------------------------------------------- */
+
+/* Loud on purpose. This is the one place in the app that puts a credential on
+   screen, and the warning has to be read before the code below it is
+   photographed — so it sits above the QR rather than under it. */
+.share-warning {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid #6b4a36;
+  border-left: 3px solid #d4834f;
+  border-radius: 6px;
+  background: #2a1f18;
+  color: #e8c3a6;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.share-warning strong {
+  color: #f2d3b8;
+}
+
+/* A white plate under the code in both themes: scanners want dark-on-light
+   and a quiet zone, not whatever the surrounding UI happens to be. */
+.share-qr-frame {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 14px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.share-qr {
+  width: min(240px, 60vw);
+  height: auto;
+  /* Square modules; smoothing them is what makes a code hard to read. */
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+
+.share-link-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* The base button styling lives on `.modal-actions button`, and this one sits
+   beside the field instead — so it needs its own copy rather than only the
+   `.modal-primary` colour, which on its own leaves an unpadded button wide
+   enough to push past the modal's edge. */
+.share-link-row button {
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 5px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.share-link {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: #171717;
+  color: #aaa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.drive-share {
+  color: #9ab7d8 !important;
+}
+
+/* --- accepting one ------------------------------------------------------- */
+
+.accept-drive {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 14px;
+  font-size: 15px;
+}
+
+.accept-branch {
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: #2a2a2a;
+  color: #9a9a9a;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 @media (max-width: 768px) {
   /* Menu rows are tapped, not clicked, so they need a real touch target. */
   .context-menu {
