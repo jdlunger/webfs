@@ -98,6 +98,12 @@ export function loadTree(store: Store, options: { seed?: boolean } = {}): Promis
 }
 
 async function readOrSeed(store: Store, { seed = true }: { seed?: boolean }): Promise<FileSystem> {
+  // Once per arrival at a drive, and cheap when there is nothing to do: names
+  // written before storage.ts started escaping them are listed by `walk` but
+  // can't be opened by the path it reports, so they're brought into line here
+  // rather than on every tree refresh. See names.ts.
+  await store.adoptNames();
+
   let entries = await store.walk();
   if (entries.length === 0 && seed) {
     for (const { dir, files } of SEED) {

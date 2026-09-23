@@ -12,11 +12,12 @@ import images from "./images";
 import panes from "./panes";
 import wikilinks from "./wikilinks";
 import vault from "./vault";
+import names from "./names";
 import view from "./view";
 import drives from "./drives";
 import sidebar from "./sidebar";
 
-const suites = { sync, "empty-repo": emptyRepo, images, panes, drives, sidebar, wikilinks, vault, view } as const;
+const suites = { sync, "empty-repo": emptyRepo, images, panes, drives, sidebar, wikilinks, vault, view, names } as const;
 
 const requested = process.argv.slice(2);
 const unknown = requested.filter(name => !(name in suites));

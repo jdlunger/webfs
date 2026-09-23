@@ -426,8 +426,10 @@ mount point, plus a remote for the kind that has one.
 **OPFS is the only store, and the directory tree is the filesystem.**
 Everything webfs persists is a name, a type, a position in the hierarchy or a
 file's text, and a directory tree expresses all four — so `storage.ts` is a
-thin layer over OPFS and nothing else. Whatever is on disk is exactly what the
-app shows, and folders are inspectable and exportable as real directories.
+thin layer over OPFS and nothing else. Folders are still real directories in
+the shape the app shows — but the *names* on disk are escaped rather than
+literal, which is the one place the store stopped being a mirror of what you
+see. "Names on disk" below is why.
 
 Everything below is about *one drive*. Each one is a folder under `drives/`
 (see Drives above), and `storeAt` binds this API to it; paths here are
@@ -454,12 +456,17 @@ there is more than one.
   the text is re-read from the new path and Crepe's undo history is lost.
   Acceptable because the rename input takes focus (`autoFocus`), so the caret
   has already left the editor before any rename can happen.
-- **Names are stored as typed, not escaped.** OPFS rejects only `""`, `.`,
-  `..`, and names containing `/` or `\` (`isValidName`). Spaces, colons,
-  leading dots, trailing spaces and non-ASCII are all legal and round-trip
-  byte-identically — confirmed against a real browser, including `café.md` and
-  `日本語.md`. If you ever see non-ASCII names fail locally, check your locale
-  first: under `LC_CTYPE=POSIX` Chromium reports a bogus `TypeMismatchError`.
+- **Names are escaped on the way to OPFS** (`names.ts`, and see "Names on
+  disk" below). `isValidName` still governs the *logical* name — OPFS rejects
+  only `""`, `.`, `..`, and names containing `/` or `\` — and spaces, colons,
+  leading dots and non-ASCII are all still legal to type. They are just not
+  handed to the platform as typed any more, because one platform rewrote them.
+  This bullet used to say names round-tripped byte-identically, confirmed
+  against a real browser; that was true of Chromium on Linux and false of
+  WebKit on a phone, which is the whole story. If you see non-ASCII names fail
+  locally, check your locale first: under `LC_CTYPE=POSIX` Chromium reports a
+  bogus `TypeMismatchError` (`LANG=C.utf8` fixes it, and the browser suites
+  need it too).
 - **Two entries can't share a name in a folder** — the filesystem forbids it.
   `createFile`/`createDirectory` therefore uniquify ("notes 2.md") and return
   the name actually used; always use the returned name. Note this applies to
@@ -525,6 +532,70 @@ there is more than one.
   `touchFile`) and `panes.ts` (`panes.test.ts`). OPFS itself can't run headless, so seeding, rename, folder
   moves, two-tab merging and offline are verified by driving real Chromium
   tabs — see Browser suites below.
+
+## Names on disk (`names.ts`)
+
+Every path segment is percent-escaped on the way into OPFS and unescaped on
+the way out — `Einführung` is stored as `Einf%C3%BChrung`. `bun test
+names.test.ts` covers the escaping; `bun run browser names` checks it against
+a real OPFS.
+
+**Why, concretely.** On 2026-09-22 a vault synced from Chrome on iOS — which
+is WebKit, because Apple requires every iOS browser to use WKWebView — came
+back from `walk()` with all nine of its non-ASCII paths in a different Unicode
+normalisation than they were written in: `ü` went in as U+00FC and came out as
+`u` + U+0308. Nothing in webfs asked for that; there is no `.normalize()` in
+the codebase. `planSync` compares paths as strings (`ShaMap` is a plain
+`Record`), so it saw nine files that weren't in the remote and nine in the
+remote that were no longer local, and did exactly what it is supposed to do
+with that: pushed nine and deleted nine, in commit `bc7735a` of the vault.
+Every device that pulled it then grew a second `Einführung/`.
+
+- **The invariant is that the platform only ever sees printable ASCII.** Not
+  "this engine normalises, so compensate for it" — the set of transformations
+  a filesystem may apply to a name is not knowable from here, and guessing at
+  it is what produced the bug. Escaping everything above U+007E, plus the
+  characters filesystems are known to argue about, means there is nothing left
+  to transform. The browser suite asserts that property directly rather than
+  asserting that any particular name survived.
+- **It costs the store being inspectable as what the app shows.** That was a
+  stated property up in Storage, and it's gone for non-ASCII names: OPFS
+  Explorer now shows `Einf%C3%BChrung`. Deliberate trade — an inspectable
+  store is worth less than a source of truth that webfs can't silently
+  rewrite.
+- **Case is a known gap.** A case-insensitive backing store would still
+  collide `README.md` with `readme.md`, and this doesn't address it. Escaping
+  case would make every capital unreadable (`%52%45%41%44%4D%45.md`) to fix a
+  fault nothing here has demonstrated, so it is written down rather than
+  fixed.
+- **Decoding is total and tolerant**, because it runs on whatever OPFS happens
+  to hold — including names written before any of this existed. A `%` that
+  begins nothing valid stays a `%`. The one ambiguity that buys: a legacy file
+  literally named `Einf%C3%BChrung` now reads as `Einführung`. Newly written,
+  that name escapes to `Einf%25C3%25BChrung` and stays distinct; only names
+  predating the change can collide, and it's a display collision, not lost
+  data.
+- **`walk` recurses on handles, not on rebuilt paths.** That saves a lookup
+  per folder, and it is what lets a not-yet-escaped folder still be listed —
+  otherwise a legacy store would go invisible the moment the escaping shipped,
+  which is a much worse failure than the one being fixed.
+- **`adoptNames` is the migration**, run once per drive arrival from
+  `readOrSeed` in `tree.ts` rather than on every tree refresh. It renames only
+  what isn't already canonical (`isCanonical`), is idempotent, and does
+  children before parents so a folder is canonical inside before it moves. Two
+  things it deliberately won't do: merge a legacy name into an escaped one
+  that already exists (that is a guess about which the user wants), and touch
+  the OPFS root, where pre-drives leftovers live.
+- **`copyTree` had to be fixed first.** Directories have no `move()`, so
+  renaming one is a copy — and it copied with `file.text()`, which would have
+  turned every pasted image inside a renamed folder into U+FFFD. It copies the
+  `File` itself now. That bug predates this change and applies to any folder
+  move, not just migration.
+- **Everything above the boundary still speaks logical names.** `fs.ts`,
+  `panes.ts`, `assets.ts`, the workspace, the sync base and the paths sent to
+  GitHub are unchanged and mean what they always meant; `dirAt` and
+  `storedName` in `storage.ts` are the only places the two spellings meet. The
+  same shape as the drives change, for the same reason.
 
 ## GitHub sync (two-way, personal access token)
 
@@ -888,7 +959,7 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
   (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `wikilinks`,
-  `vault`, `view`). The dev server is started by the
+  `vault`, `view`, `names`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. Not in CI — they take about a minute and want a real
@@ -929,6 +1000,12 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
   waiting on the asset alone catches the note mid-write.
 - **`opfsFiles` skips entries that vanish under it.** The app writes while
   the walker reads; a half-created file is not an answer worth returning.
+- **`opfsFiles` reports names as OPFS holds them, which is escaped.** It walks
+  the directory rather than going through `storage.ts`, so a non-ASCII path
+  comes back as `Einf%C3%BChrung/...` — that is the point, since it is the only
+  way to assert what actually reached the platform. `writeOpfsFile` writes the
+  name it is given, unescaped, which is how the `names` suite plants a store
+  from before the escaping existed.
 - **`opfsFiles` is about one drive, and refuses to guess between several.** It
   returns drive-relative paths, because that's what the app's ids and the
   repository's paths both are — an assertion written against

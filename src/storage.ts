@@ -22,6 +22,8 @@
  * over the same name.
  */
 
+import { decodeSegment, encodeSegment, isCanonical } from "./names";
+
 export type Path = readonly string[];
 
 /**
@@ -74,14 +76,21 @@ async function rootDir(): Promise<FileSystemDirectoryHandle> {
   return navigator.storage.getDirectory();
 }
 
+/**
+ * Every path below is a *logical* one — the names the app and the repository
+ * use. This is where they become the names OPFS sees, and the only place the
+ * two are allowed to differ: see names.ts for why they have to.
+ */
 async function dirAt(path: Path, create = false): Promise<FileSystemDirectoryHandle> {
   let dir = await rootDir();
-  for (const segment of path) dir = await dir.getDirectoryHandle(segment, { create });
+  for (const segment of path) dir = await dir.getDirectoryHandle(encodeSegment(segment), { create });
   return dir;
 }
 
 const parentOf = (path: Path) => path.slice(0, -1);
 const nameOf = (path: Path) => path[path.length - 1]!;
+/** The last segment as OPFS holds it. Pairs with `dirAt` for the rest. */
+const storedName = (path: Path) => encodeSegment(nameOf(path));
 
 async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
   try {
@@ -142,31 +151,41 @@ async function modifiedTime(dir: FileSystemDirectoryHandle, name: string): Promi
   }
 }
 
-/** Reads the whole tree. Cheap for a notes app; the only index that exists. */
-async function walk(path: Path = []): Promise<WalkEntry[]> {
-  let dir: FileSystemDirectoryHandle;
-  try {
-    dir = await dirAt(path);
-  } catch {
-    // A drive whose mount hasn't been created yet, or whose storage was
-    // evicted, is empty rather than broken — the registry outlives the files.
-    return [];
-  }
+/**
+ * Reads the whole tree. Cheap for a notes app; the only index that exists.
+ *
+ * Recurses on the handle the listing already handed over rather than building
+ * a path and resolving it again. That saves a lookup per folder, and it means
+ * a folder whose stored name isn't canonical yet — one written before names.ts
+ * existed — is still walked rather than silently missed.
+ */
+async function walkDir(dir: FileSystemDirectoryHandle): Promise<WalkEntry[]> {
   const entries: WalkEntry[] = [];
-  for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+  for await (const [stored, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+    const name = decodeSegment(stored);
     entries.push(
       handle.kind === "directory"
-        ? { name, kind: handle.kind, children: await walk([...path, name]) }
-        : { name, kind: handle.kind, children: [], lastModified: await modifiedTime(dir, name) },
+        ? { name, kind: "directory", children: await walkDir(handle as FileSystemDirectoryHandle) }
+        : { name, kind: "file", children: [], lastModified: await modifiedTime(dir, stored) },
     );
   }
   return entries;
 }
 
+async function walk(path: Path = []): Promise<WalkEntry[]> {
+  try {
+    return await walkDir(await dirAt(path));
+  } catch {
+    // A drive whose mount hasn't been created yet, or whose storage was
+    // evicted, is empty rather than broken — the registry outlives the files.
+    return [];
+  }
+}
+
 async function readFile(path: Path): Promise<string | null> {
   try {
     const dir = await dirAt(parentOf(path));
-    return await (await (await dir.getFileHandle(nameOf(path))).getFile()).text();
+    return await (await (await dir.getFileHandle(storedName(path))).getFile()).text();
   } catch {
     // Missing is a normal outcome — another tab may have deleted it.
     return null;
@@ -184,7 +203,7 @@ async function readFile(path: Path): Promise<string | null> {
 async function readBytes(path: Path): Promise<Bytes | null> {
   try {
     const dir = await dirAt(parentOf(path));
-    const file = await (await dir.getFileHandle(nameOf(path))).getFile();
+    const file = await (await dir.getFileHandle(storedName(path))).getFile();
     return new Uint8Array(await file.arrayBuffer());
   } catch {
     return null;
@@ -222,7 +241,7 @@ async function withWriteLock(name: string, write: () => Promise<void>): Promise<
 function writeFile(path: Path, content: string | Bytes): Promise<WriteResult> {
   return withWriteLock(`webfs:${path.join("/")}`, async () => {
     const dir = await dirAt(parentOf(path), true);
-    const handle = await dir.getFileHandle(nameOf(path), { create: true });
+    const handle = await dir.getFileHandle(storedName(path), { create: true });
     const writable = await handle.createWritable();
     try {
       // Bytes go through a Blob: FileSystemWritableFileStream accepts one,
@@ -239,25 +258,28 @@ function writeFile(path: Path, content: string | Bytes): Promise<WriteResult> {
 async function createFile(parent: Path, desired: string): Promise<string> {
   requireValid(desired);
   const dir = await dirAt(parent, true);
-  const name = await uniqueName(dir, desired);
+  // Uniquified in stored space, because that's what the directory holds — and
+  // decoded on the way back, because the caller deals in logical names.
+  const name = await uniqueName(dir, encodeSegment(desired));
   const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
   await writable.close();
-  return name;
+  return decodeSegment(name);
 }
 
 async function createDirectory(parent: Path, desired: string): Promise<string> {
   requireValid(desired);
   const dir = await dirAt(parent, true);
-  const name = await uniqueName(dir, desired);
+  const name = await uniqueName(dir, encodeSegment(desired));
   await dir.getDirectoryHandle(name, { create: true });
-  return name;
+  return decodeSegment(name);
 }
 
 async function removeEntry(path: Path): Promise<void> {
   const dir = await dirAt(parentOf(path));
-  await dir.removeEntry(nameOf(path), { recursive: true });
+  await dir.removeEntry(storedName(path), { recursive: true });
 }
 
+/** Names here are the stored ones, copied across as they are. */
 async function copyTree(from: FileSystemDirectoryHandle, name: string, to: FileSystemDirectoryHandle, as: string): Promise<void> {
   let source: FileSystemDirectoryHandle;
   try {
@@ -266,7 +288,10 @@ async function copyTree(from: FileSystemDirectoryHandle, name: string, to: FileS
     const file = await (await from.getFileHandle(name)).getFile();
     const writable = await (await to.getFileHandle(as, { create: true })).createWritable();
     try {
-      await writable.write(await file.text());
+      // The File itself, not its text: a folder being moved can hold a pasted
+      // image, and decoding those bytes as text would replace them with U+FFFD
+      // and write the damage to the copy.
+      await writable.write(file);
     } finally {
       await writable.close();
     }
@@ -290,22 +315,24 @@ async function relocate(path: Path, newParent: Path, newName: string): Promise<v
   requireValid(newName);
   const fromDir = await dirAt(parentOf(path));
   const toDir = await dirAt(newParent, true);
-  const name = nameOf(path);
-  if (parentOf(path).join("/") === newParent.join("/") && name === newName) return;
-  if (await entryExists(toDir, newName)) throw new NameTakenError(newName);
+  const stored = storedName(path);
+  const target = encodeSegment(newName);
+  if (parentOf(path).join("/") === newParent.join("/") && nameOf(path) === newName) return;
+  // Reported with the name the user typed, not the one on disk.
+  if (await entryExists(toDir, target)) throw new NameTakenError(newName);
 
   try {
-    const file = await fromDir.getFileHandle(name);
+    const file = await fromDir.getFileHandle(stored);
     if ("move" in file) {
-      await (file as FileSystemFileHandle & { move: (a: unknown, b?: string) => Promise<void> }).move(toDir, newName);
+      await (file as FileSystemFileHandle & { move: (a: unknown, b?: string) => Promise<void> }).move(toDir, target);
       return;
     }
   } catch (err) {
     if (err instanceof NameTakenError) throw err;
     // Not a file, or no move() — fall through to copy + delete.
   }
-  await copyTree(fromDir, name, toDir, newName);
-  await fromDir.removeEntry(name, { recursive: true });
+  await copyTree(fromDir, stored, toDir, target);
+  await fromDir.removeEntry(stored, { recursive: true });
 }
 
 function renameEntry(path: Path, newName: string): Promise<void> {
@@ -314,6 +341,53 @@ function renameEntry(path: Path, newName: string): Promise<void> {
 
 function moveEntry(path: Path, newParent: Path): Promise<void> {
   return relocate(path, newParent, nameOf(path));
+}
+
+/**
+ * Renames whatever was stored before names.ts existed.
+ *
+ * `walk` still *lists* a legacy name, because it recurses on handles — but a
+ * lookup by that name now escapes it and misses, so the file would appear in
+ * the tree and fail to open. One sweep per mount fixes that, and it only
+ * touches names that aren't already what the escaping would have written:
+ * for a vault of 35 notes that was nine files and one folder.
+ *
+ * Idempotent, and safe to interrupt: each rename stands alone, and a second
+ * run finishes whatever the first didn't. Children are renamed before their
+ * parent so a folder is already canonical inside by the time it moves.
+ */
+async function adoptNames(dir: FileSystemDirectoryHandle): Promise<number> {
+  // Listed in full first: renaming entries while iterating the directory that
+  // holds them is not something the API promises anything about.
+  const entries: Array<[string, FileSystemHandle]> = [];
+  for await (const pair of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) entries.push(pair);
+
+  let renamed = 0;
+  for (const [stored, handle] of entries) {
+    if (handle.kind === "directory") renamed += await adoptNames(handle as FileSystemDirectoryHandle);
+    if (isCanonical(stored)) continue;
+
+    const target = encodeSegment(decodeSegment(stored));
+    // Both spellings present is the damage this whole change exists to stop.
+    // Merging them is a guess about which is wanted; leaving the legacy one
+    // alone keeps it visible and costs nothing that isn't already lost.
+    if (await entryExists(dir, target)) continue;
+
+    try {
+      const file = await dir.getFileHandle(stored);
+      if ("move" in file) {
+        await (file as FileSystemFileHandle & { move: (a: unknown, b?: string) => Promise<void> }).move(dir, target);
+        renamed++;
+        continue;
+      }
+    } catch {
+      // A directory, or a file handle without move(): copy and delete instead.
+    }
+    await copyTree(dir, stored, dir, target);
+    await dir.removeEntry(stored, { recursive: true });
+    renamed++;
+  }
+  return renamed;
 }
 
 // --- stores ------------------------------------------------------------------
@@ -338,6 +412,8 @@ export interface Store {
   removeEntry(path: Path): Promise<void>;
   renameEntry(path: Path, newName: string): Promise<void>;
   moveEntry(path: Path, newParent: Path): Promise<void>;
+  /** Brings names written before names.ts into line. Returns how many moved. */
+  adoptNames(): Promise<number>;
 }
 
 export function storeAt(mount: Path): Store {
@@ -353,6 +429,13 @@ export function storeAt(mount: Path): Store {
     removeEntry: path => removeEntry(at(path)),
     renameEntry: (path, newName) => renameEntry(at(path), newName),
     moveEntry: (path, newParent) => moveEntry(at(path), at(newParent)),
+    adoptNames: async () => {
+      try {
+        return await adoptNames(await dirAt(at([])));
+      } catch {
+        return 0; // No mount yet is nothing to adopt.
+      }
+    },
   };
 }
 
