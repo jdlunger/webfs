@@ -174,6 +174,48 @@ export default async function run(browser: Browser): Promise<number> {
   await syncAndSettle(page);
   checks.ok("the token is sent nowhere but the GitHub API", leaked.length === 0, leaked.join(", "));
 
+  // --- offline ----------------------------------------------------------------
+
+  // Everything is in OPFS, so the app keeps working with the network gone —
+  // which is exactly why it has to *say* the network is gone. Silence reads
+  // as "synced", and the one thing worth knowing then is how stale this
+  // device is.
+  await context.setOffline(true);
+  const wentOffline = await waitUntil("the strip to notice", async () =>
+    ((await statusText(page)) ?? "").startsWith("Offline"),
+  );
+  checks.ok("going offline says so in the strip", wentOffline, (await statusText(page)) ?? "");
+  checks.ok(
+    "and says when this device last got through",
+    /last synced (today|yesterday|\d)/.test((await statusText(page)) ?? ""),
+    (await statusText(page)) ?? "",
+  );
+  // A press would run a pass that refuses itself, which from outside is a
+  // button that does nothing.
+  checks.ok("the sync button is disabled rather than silently doing nothing", await page.isDisabled(".sync-now"));
+
+  // The time has to outlive the session, because the case it exists for is
+  // the installed app opened on a train: nothing has synced to put it in
+  // memory. That reload can't be driven here — offline it is the service
+  // worker that serves the shell, and `bun dev` never registers one — so what
+  // is checked is that the value a fresh load would read is really on disk.
+  const stored = await page.evaluate(() => localStorage.getItem("webfs:sync:at:me/notes#main"));
+  const age = stored === null ? NaN : Date.now() - Number(stored);
+  checks.ok("the time is written down, so a fresh load can say it too", age >= 0 && age < 120_000, String(stored));
+
+  await context.setOffline(false);
+  const recovered = await waitUntil("the strip to recover", async () => {
+    const text = (await statusText(page)) ?? "";
+    return text.length > 0 && !text.startsWith("Offline");
+  });
+  checks.ok("the connection coming back clears it, and syncs", recovered, (await statusText(page)) ?? "");
+  // Not read once: coming back online starts a sync, and the button is
+  // legitimately disabled for as long as that runs.
+  checks.ok(
+    "and the button works again once that sync is done",
+    await waitUntil("the button to come back", async () => !(await page.isDisabled(".sync-now"))),
+  );
+
   await context.close();
   await second.close();
   return checks.failures;

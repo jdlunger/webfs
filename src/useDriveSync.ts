@@ -24,7 +24,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GitHubError, GitHubRemote, webCryptoAvailable } from "./github";
 import { describeSummary, opfsLocalFs, syncOnce, type SyncProgress, type SyncResult } from "./sync";
 import { driveId, type Drive, type GitHubDrive } from "./drives";
-import { loadState, saveState } from "./driveConfig";
+import { loadState, loadSyncedAt, saveState, saveSyncedAt } from "./driveConfig";
 import type { Store } from "./storage";
 
 /** How long after the last local edit to push. */
@@ -56,6 +56,13 @@ export interface SyncStatus {
 
 export interface DriveSync {
   status: SyncStatus;
+  /**
+   * Whether the browser thinks it can reach the network. Watched here rather
+   * than read where it's drawn, because it has to *change* the moment the
+   * connection does — `navigator.onLine` read during a render is a value from
+   * whenever that render happened to run.
+   */
+  online: boolean;
   /** Runs now, unless one is already running. */
   syncNow: () => void;
   /** Asks for a sync once edits settle; ignored when auto-sync is off. */
@@ -86,9 +93,13 @@ async function exclusively<T>(name: string, body: () => Promise<T>): Promise<T |
   return result as T | "busy";
 }
 
+/** What a drive starts at: idle, but already knowing when it last synced. */
+const idleFor = (drive: GitHubDrive): SyncStatus => ({ ...IDLE, lastSyncedAt: loadSyncedAt(drive) });
+
 export function useDriveSync({ drive, store, flush, onLocalChanges }: DriveSyncOptions): DriveSync {
   const remoteDrive = drive?.kind === "github" ? drive : null;
-  const [status, setStatus] = useState<SyncStatus>(() => (remoteDrive ? IDLE : OFF));
+  const [status, setStatus] = useState<SyncStatus>(() => (remoteDrive ? idleFor(remoteDrive) : OFF));
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine !== false);
 
   // Timers and listeners are registered once but need today's values.
   const driveRef = useRef<GitHubDrive | null>(remoteDrive);
@@ -106,6 +117,9 @@ export function useDriveSync({ drive, store, flush, onLocalChanges }: DriveSyncO
     const current = driveRef.current;
     const currentStore = storeRef.current;
     if (!current || running.current) return;
+    // Nothing to report from here: the status line already says the device is
+    // offline and when it last got through, which is more than a failed
+    // request would tell anyone.
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     if (!webCryptoAvailable()) {
       setStatus({
@@ -166,8 +180,10 @@ export function useDriveSync({ drive, store, flush, onLocalChanges }: DriveSyncO
       const stillActive = driveRef.current !== null && driveId(driveRef.current) === driveId(current);
       saveState(current, outcome.state);
       if (outcome.written.length > 0 || outcome.removed.length > 0) onLocalChangesRef.current(outcome);
+      const at = Date.now();
+      saveSyncedAt(current, at);
       if (stillActive) {
-        setStatus({ phase: "idle", message: describeSummary(outcome.summary), lastSyncedAt: Date.now(), progress: null });
+        setStatus({ phase: "idle", message: describeSummary(outcome.summary), lastSyncedAt: at, progress: null });
       }
     } catch (err) {
       setStatus(prev => ({
@@ -194,9 +210,33 @@ export function useDriveSync({ drive, store, flush, onLocalChanges }: DriveSyncO
   // re-pointing a drive at another branch is a different tree to reconcile.
   const key = remoteDrive === null ? null : `${driveId(remoteDrive)}#${remoteDrive.branch}`;
   useEffect(() => {
-    setStatus(key === null ? OFF : IDLE);
-    if (key !== null) void run();
+    const current = driveRef.current;
+    setStatus(current === null ? OFF : idleFor(current));
+    if (current !== null) void run();
   }, [key, run]);
+
+  /**
+   * Registered for every drive, not only an auto-syncing one, because this
+   * decides what the strip *says* as much as when a sync runs — a drive with
+   * auto-sync off is still offline, and still worth saying so about.
+   *
+   * Coming back online re-runs the pass that was refused while the connection
+   * was down, but only where that pass would have been automatic anyway:
+   * auto-sync off means "ask me", and a reconnection isn't the user asking.
+   */
+  useEffect(() => {
+    const update = () => {
+      const up = navigator.onLine !== false;
+      setOnline(up);
+      if (up && driveRef.current?.auto) void run();
+    };
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, [run]);
 
   const auto = remoteDrive?.auto ?? false;
   useEffect(() => {
@@ -218,5 +258,5 @@ export function useDriveSync({ drive, store, flush, onLocalChanges }: DriveSyncO
     if (settleTimer.current) clearTimeout(settleTimer.current);
   }, []);
 
-  return { status, syncNow, requestSync };
+  return { status, online, syncNow, requestSync };
 }

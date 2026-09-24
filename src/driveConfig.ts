@@ -24,6 +24,7 @@ const DRIVES_KEY = "webfs:drives";
 const LAST_KEY = "webfs:drive:last";
 const SEEDED_KEY = "webfs:drives:seeded";
 const STATE_PREFIX = "webfs:sync:state:";
+const SYNCED_AT_PREFIX = "webfs:sync:at:";
 
 /** What the GitHub connection was called before drives existed. */
 const LEGACY_CONFIG_KEY = "webfs:github:config";
@@ -181,8 +182,8 @@ export function saveLastDrive(drive: Drive | null): void {
  * different branch doesn't inherit a base describing a tree that branch never
  * had — which would read as "everything was deleted there".
  */
-function stateKey(drive: Drive): string {
-  return `${STATE_PREFIX}${driveId(drive)}${drive.kind === "github" ? `#${drive.branch}` : ""}`;
+function stateKey(drive: Drive, prefix = STATE_PREFIX): string {
+  return `${prefix}${driveId(drive)}${drive.kind === "github" ? `#${drive.branch}` : ""}`;
 }
 
 export function loadState(drive: Drive): SyncState {
@@ -198,5 +199,29 @@ export function loadState(drive: Drive): SyncState {
 
 export function saveState(drive: Drive, state: SyncState): void {
   writeItem(stateKey(drive), JSON.stringify(state));
+}
+
+/**
+ * When this drive last finished a sync.
+ *
+ * Kept here rather than only in the hook's state, because the moment it is
+ * most worth knowing is the one where that state is empty: the app opened
+ * offline, on a phone, with no run to have set it. "Last synced" that says
+ * nothing at all after a reload answers the question exactly when it's being
+ * asked. Keyed by branch alongside the base for the same reason the base is —
+ * it describes a pass over *that* branch.
+ *
+ * It is not part of `SyncState`, which is the three-way base and nothing
+ * else: `syncOnce` neither reads nor produces this, and putting it there
+ * would hand the sync algorithm a field it has no business in.
+ */
+export function loadSyncedAt(drive: Drive): number | null {
+  const raw = readItem(stateKey(drive, SYNCED_AT_PREFIX));
+  const at = raw === null ? NaN : Number(raw);
+  return Number.isFinite(at) ? at : null;
+}
+
+export function saveSyncedAt(drive: Drive, at: number): void {
+  writeItem(stateKey(drive, SYNCED_AT_PREFIX), String(at));
 }
 

@@ -881,6 +881,45 @@ you're looking at syncs — see Drives above.
   the sidebar's footer doesn't change height every time a sync starts.
 - **Timing:** on load, 4s after edits settle, every 60s, on tab-visible and on
   `online`, plus the button. Auto-sync is a checkbox; the button always works.
+- **Offline is said out loud, with the date and time of the last sync.** The
+  app works offline — everything is in OPFS — which is exactly why the strip
+  has to say the network is gone: silence reads as "synced", and a device
+  quietly three days behind looks identical to one that is up to date. The
+  line takes precedence over both the error and the progress line, because a
+  failed request *is* what being offline looks like from inside `github.ts`
+  ("Can't reach GitHub — check your connection") and the connection is the
+  part worth naming. The sync button is disabled with a title that says why,
+  since a press would otherwise run a pass that silently refuses itself.
+- **`useDriveSync` watches `online`/`offline` rather than reading
+  `navigator.onLine` where it's drawn**, which would be a value from whenever
+  that render happened to run. The listener is registered for every drive, not
+  only an auto-syncing one — a drive with auto-sync off is still offline — but
+  it only re-runs the sync on reconnection *if* auto-sync is on, because "ask
+  me" shouldn't be overridden by a reconnection the user didn't ask for.
+- **The last-sync time is persisted** (`loadSyncedAt`/`saveSyncedAt` in
+  `driveConfig.ts`, keyed by drive and branch like the base). The moment it is
+  most worth knowing is the one where memory is empty: the installed app
+  opened on a train, with no run to have set it. It is deliberately *not* part
+  of `SyncState` — `syncOnce` neither reads nor writes it, and putting it
+  there would hand the algorithm a field it has no business in.
+- **A restored time with no message says "Last synced 3h ago", not "Up to
+  date".** An empty message means the time came back from storage and nothing
+  has synced in this session yet, so the older wording claimed a check that
+  hadn't happened. `syncedAtLabel` gives the offline line an absolute time
+  instead of a relative one, because what matters offline is *how stale* this
+  device is and "18h ago" takes work to turn into "before I got on the
+  plane"; the two days that have names get them, the year appears only when it
+  isn't this one, and both halves go through `toLocale*String` so the clock
+  and the day-month order are the reader's settings rather than a guess.
+  `drivePanel.test.ts` pins which branch the label takes, not how a locale
+  renders it — asserting "23 Sep 14:32" would pin this container's locale.
+- **An offline *reload* can't be driven by the browser suites.** Offline it is
+  the service worker that serves the shell, and `bun dev` never registers one
+  (see PWA below), so `bun run browser sync` checks the durable half instead:
+  that the timestamp a fresh load would read is really in localStorage. What
+  it does drive for real is `context.setOffline`, which does flip
+  `navigator.onLine` and fire the events — checked before the test was written
+  around it.
 - **Keystrokes that land mid-sync are merged, not dropped.** A sync reads OPFS
   at the start and writes it back seconds later; anything typed in between is
   in memory but not in what it merged, and letting the queued write flush on

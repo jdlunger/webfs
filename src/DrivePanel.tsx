@@ -64,7 +64,7 @@ export function DrivePanel({
             ▾
           </span>
         </button>
-        {drive === null ? null : <DriveStatusLine drive={drive} status={sync.status} />}
+        {drive === null ? null : <DriveStatusLine drive={drive} status={sync.status} online={sync.online} />}
       </div>
       {drive === null ? null : (
         <button className="drive-settings" title={`${describeDrive(drive)} settings`} onClick={() => setEditing(drive)}>
@@ -74,8 +74,10 @@ export function DrivePanel({
       {drive?.kind === "github" ? (
         <button
           className="sync-now"
-          title="Sync with GitHub now"
-          disabled={status.phase === "syncing"}
+          // Offline, the button is the one thing that would otherwise appear
+          // to do nothing at all: a press runs a pass that refuses itself.
+          title={sync.online ? "Sync with GitHub now" : "Offline — nothing can be synced until the connection is back"}
+          disabled={status.phase === "syncing" || !sync.online}
           onClick={sync.syncNow}
         >
           {status.phase === "syncing" ? "…" : "⟳"}
@@ -198,7 +200,7 @@ export function branchUrl({ owner, repo, branch }: Pick<GitHubDrive, "owner" | "
 }
 
 /** "Synced 2m ago" decays on its own, so it can't sit there claiming "just now". */
-function DriveStatusLine({ drive, status }: { drive: Drive; status: DriveSync["status"] }) {
+function DriveStatusLine({ drive, status, online }: { drive: Drive; status: DriveSync["status"]; online: boolean }) {
   const [, setTick] = useState(0);
   const { phase, message, lastSyncedAt, progress } = status;
   useEffect(() => {
@@ -212,6 +214,22 @@ function DriveStatusLine({ drive, status }: { drive: Drive; status: DriveSync["s
   // answer: this one is on this device and nowhere else.
   if (drive.kind === "opfs") {
     return <span className="sync-status">On this device only</span>;
+  }
+
+  // Ahead of the error, because a failed request *is* what being offline
+  // looks like from in here ("Can't reach GitHub — check your connection"),
+  // and the connection is the part worth saying. Ahead of a running sync for
+  // the same reason: one that started before the network went is about to
+  // fail, and this already says why.
+  if (!online) {
+    return (
+      <span
+        className="sync-status sync-status-offline"
+        title={lastSyncedAt === null ? "Offline" : `Offline. Last synced ${new Date(lastSyncedAt).toLocaleString()}`}
+      >
+        Offline · {lastSyncedAt === null ? "not synced yet" : `last synced ${syncedAtLabel(lastSyncedAt)}`}
+      </span>
+    );
   }
 
   if (phase === "error") {
@@ -234,11 +252,49 @@ function DriveStatusLine({ drive, status }: { drive: Drive; status: DriveSync["s
     );
   }
   if (lastSyncedAt === null) return <span className="sync-status">{message || "Not synced yet"}</span>;
+  // An empty message with a time means the time came back from storage and
+  // nothing has synced in this session yet — a reload, or a drive just
+  // arrived at. Saying "Up to date" there would be claiming a check that
+  // hasn't happened.
   return (
-    <span className="sync-status" title={message}>
-      {message || "Up to date"} · {relativeTime(lastSyncedAt)}
+    <span className="sync-status" title={`Last synced ${new Date(lastSyncedAt).toLocaleString()}`}>
+      {message ? `${message} · ${relativeTime(lastSyncedAt)}` : `Last synced ${relativeTime(lastSyncedAt)}`}
     </span>
   );
+}
+
+/**
+ * A last-sync time as a day and a clock time, for when "3h ago" isn't the
+ * answer to the question being asked.
+ *
+ * Offline, what matters is *how stale* this device is, and a relative age
+ * stops being usable at the point it starts mattering: "18h ago" takes work
+ * to turn into "before I got on the plane". The day is named rather than
+ * dated for the two that have names, because "yesterday 14:32" is read at a
+ * glance and "23 Sep 14:32" is read twice. The year appears only when it
+ * isn't this one.
+ *
+ * Both halves go through `toLocaleDateString`/`toLocaleTimeString` with no
+ * locale of ours, so a 24-hour clock and a day-month order are the reader's
+ * own settings rather than a guess made here.
+ */
+export function syncedAtLabel(at: number, now: number = Date.now()): string {
+  const when = new Date(at);
+  const today = new Date(now);
+  const time = when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((startOfDay(today) - startOfDay(when)) / 86_400_000);
+  if (days === 0) return `today ${time}`;
+  if (days === 1) return `yesterday ${time}`;
+
+  const sameYear = when.getFullYear() === today.getFullYear();
+  const date = when.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+  return `${date} ${time}`;
 }
 
 function relativeTime(at: number): string {
