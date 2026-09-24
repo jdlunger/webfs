@@ -615,6 +615,25 @@ body.resizing-sidebar {
   .editor .milkdown-root .ProseMirror h3 {
     font-size: 1.3em;
   }
+
+  /* Tap-sized, like every other control that has to be hit with a thumb. The
+     handle earns its 44px by taking a line of its own rather than floating
+     over the list — a chip this big covering a note's first task would be a
+     poor trade for the space it saves. */
+  .task-sort-button {
+    min-width: 44px;
+    height: 36px;
+    opacity: 0.7;
+  }
+
+  .todo-block-item {
+    min-height: 44px;
+  }
+
+  .todo-block-refresh {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 /* An Obsidian embed, `![[Pasted image 20260905101712.png|541]]`. A span rather
@@ -654,6 +673,168 @@ body.resizing-sidebar {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   word-break: break-all;
+}
+
+/* --- sorting a checkbox list ---------------------------------------------- */
+
+/* A widget decoration, so it sits before the list rather than in it — nothing
+   about this button is part of the document. It takes a line of its own rather
+   than floating over the list's top-right corner: the right-hand end of a
+   note's *first* task is exactly the text you can least afford to cover, and
+   it is also where a long one wraps to. */
+.task-sort {
+  display: flex;
+  justify-content: flex-end;
+  /* Pulled down into the list's own top margin, so a list with a handle sits
+     where a list without one would. */
+  margin: 0 0 -6px;
+}
+
+.task-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #242424;
+  color: #888;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  /* Faint enough to read past, solid enough to be found. It is the only way
+     to reach this, so it can't be hover-only. */
+  opacity: 0.6;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease;
+}
+
+.task-sort-button:hover,
+.task-sort-button:focus-visible {
+  opacity: 1;
+  color: #ddd;
+  border-color: #555;
+}
+
+/* --- the todo fence -------------------------------------------------------- */
+
+/* Drawn from the drive rather than from the document, so nothing in here is
+   editable and none of it is text to select. */
+.todo-block {
+  margin: 16px 0;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #232323;
+  overflow: hidden;
+  font-size: 14px;
+  user-select: none;
+}
+
+.todo-block.ProseMirror-selectednode {
+  outline: 2px solid #4a7bd0;
+  outline-offset: 1px;
+}
+
+.todo-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #303030;
+  background: #262626;
+}
+
+.todo-block-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ddd;
+}
+
+.todo-block-scope {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #777;
+  font-size: 12px;
+}
+
+.todo-block-refresh {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.todo-block-refresh:hover {
+  color: #ddd;
+  border-color: #444;
+}
+
+.todo-block-body {
+  padding: 4px;
+}
+
+.todo-block-empty {
+  margin: 0;
+  padding: 10px 8px;
+  color: #777;
+  font-size: 13px;
+}
+
+.todo-block-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.todo-block-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: #ddd;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.todo-block-item:hover {
+  background: #2e2e2e;
+}
+
+.todo-block-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The last segment only: this column is a note wide, and a clipped path shows
+   the half that doesn't identify it. The whole thing is in the tooltip. */
+.todo-block-where {
+  flex: none;
+  color: #777;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.todo-block-more {
+  padding: 7px 8px;
+  color: #777;
+  font-size: 12px;
 }
 
 /* Shown in place of the editor for a file that isn't text. */

@@ -45,6 +45,30 @@ Chrome have. **iOS Safari does not display a PDF inside a page**, so the line
 under it always offers to open the document in a new tab, where it reads
 properly.
 
+## Checkboxes
+
+A list with `- [ ]` items in it gets a **⇅** button above its right-hand
+corner. Pressing it moves everything already ticked to the bottom, keeping the
+order of the rest. Pressing it on a list that is already in that order does
+nothing at all — it won't touch the file.
+
+To see what is left across all your notes, write a `todo` block:
+
+    ```todo
+    ```
+
+It renders as a list of every unticked checkbox in the drive, each row naming
+the note it came from; clicking one opens that note so you can tick it there.
+Put a folder after the word to narrow it to one part of the tree:
+
+    ```todo Work/Reports
+    ```
+
+**Todo list** in the editor's `/` menu writes the block for you.
+It's an ordinary fenced code block, so a note containing one is still a normal
+markdown file everywhere else — GitHub and Obsidian just show an empty code
+block.
+
 ## Obsidian vaults
 
 Notes written in Obsidian link their images with `![[Pasted image 2026.png]]`

@@ -42,6 +42,7 @@ import {
 } from "./panes";
 import { BASE_PATH } from "./basePath";
 import { importName, neverText } from "./assets";
+import { findOpenTasks } from "./tasks";
 import { decodeText } from "./github";
 import { mergeText } from "./merge";
 import {
@@ -957,6 +958,24 @@ export function App() {
     });
   }, [refreshTree]);
 
+  /**
+   * What a `todo` fence in the editor lists.
+   *
+   * Here rather than in the editor because it reads every note in the drive,
+   * and the tree is App's — including, crucially, the text open tabs are
+   * holding, which the debounce means hasn't reached disk yet. Reading it all
+   * from the store instead would list a checkbox you ticked a second ago.
+   *
+   * Through the refs, so this identity never changes: the editor closes over
+   * it for its whole life, and a new function every render must not be a
+   * reason to rebuild Crepe.
+   */
+  const findTasks = useCallback(
+    (scope: string) =>
+      findOpenTasks(fsRef.current ?? EMPTY_TREE, scope, id => storeRef.current.readFile(segmentsOf(id))),
+    [],
+  );
+
   const handleContentChange = (id: string, content: string) => {
     setFs(prev => (prev ? updateFileContent(prev, id, content) : prev));
     scheduleWrite(id, content);
@@ -1092,6 +1111,8 @@ export function App() {
                 externalEdit={file ? externalEdits[file.id] ?? 0 : 0}
                 onChange={handleContentChange}
                 onAssetAdded={handleAssetAdded}
+                findTasks={findTasks}
+                onOpenFile={handleSelectFile}
               />
             </div>
           );

@@ -14,7 +14,8 @@ live), `storage.ts` (thin OPFS layer, rooted at a drive's mount), `tree.ts`
 over that record), `panes.ts` (which files are open, in which pane),
 `workspace.ts` (that layout remembered per drive in localStorage),
 `createdAt.ts` (when each file first appeared here, in IndexedDB),
-`merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
+`tasks.ts` (what a checkbox is and what order they go in), `fences.ts` (the
+triple-backtick commands), `merge.ts` (three-way line merge). Tests are `*.test.ts` at the root
 (`bun test`) plus `browser/` for what only a real browser can exercise
 (`bun run browser`).
 
@@ -1099,6 +1100,98 @@ the link actually points, then `Media/<name>`.
   to keep in step with the attachment folder in `.obsidian/app.json`, which
   webfs doesn't read.
 
+## Checkboxes: sorting a list, and the `todo` fence
+
+`tasks.ts` (what a checkbox is, and what order they go in — pure,
+`tasks.test.ts`), `fences.ts` (the triple-backtick command syntax — pure,
+`fences.test.ts`), the node, the decoration and the slash-menu item in
+`Editor.tsx`, `findTasks` in `App.tsx`, and `.task-sort` / `.todo-block` in
+`index.css`. Driven end to end by `bun run browser todo`.
+
+Two features that turned out to be one module: a **⇅ beside every checkbox
+list**, which drops the finished items to the bottom, and a **```todo fence**,
+which draws the unfinished ones from the whole drive wherever it is written.
+
+- **Neither is a markdown dialect of its own.** The sort rearranges lines that
+  were already there. The fence is a fenced code block, which CommonMark has
+  had all along — so a note holding one is still an ordinary markdown file:
+  GitHub renders an empty code block, Obsidian the same, and a sync carries it
+  about with nothing having an opinion. Compare `![[…]]`, which had to be
+  taught to remark before a note containing one could be *opened* here without
+  being rewritten. This only had to be taught how to draw it.
+- **Sorting a list that is already sorted must write nothing at all.** That is
+  the whole reason `sortedList` returns `null` rather than an equal copy, and
+  the reason `orderByDone` hands back a permutation rather than the items. A
+  transaction re-serializes the document, and a button that rewrote the note
+  every time it was pressed would be a way to make a sync change by tidying
+  something already tidy — invisible on screen, which is why the browser suite
+  reads the bytes back rather than the list.
+- **An item that isn't a checkbox counts as unfinished.** It has nothing to
+  say about being done, and dropping it to the bottom with the finished ones
+  would be an opinion nobody asked for. Both halves are stable, so the order
+  someone chose among their own work survives.
+- **One handle per outermost list, and it takes the nested ones with it.** A
+  button at every level of a nested list would be four buttons doing the same
+  thing, and a sub-list travels inside the item it belongs to, so it stays
+  under its parent wherever the parent lands.
+- **The handle is a widget decoration, not a node.** Nothing about it is
+  written to the file, and a decoration is exactly the way to say that — it
+  also means the editor can draw one without `markdownUpdated` ever firing.
+  `getPos` is asked at click time rather than captured, so a list that has
+  moved since the button was drawn still sorts the right one.
+- **It takes a line of its own rather than floating over the list's corner.**
+  The right-hand end of a note's *first* task is the text you can least afford
+  to cover, and it is also where a long one wraps to. The line is pulled back
+  into the list's own top margin, so a list with a handle sits where a list
+  without one would.
+- **A `todo` fence is drawn from the drive, not from the document.** The
+  document holds four characters; what is on screen is a read of every
+  markdown file under the scope named after the fence (empty means the whole
+  drive). So the node is an atom, not editable, and there is no third copy of
+  anything.
+- **The scan reads the tree App holds, not the store.** Saves are debounced, so
+  the file being edited is behind what is on disk — a block that listed a
+  checkbox you ticked a second ago would be wrong in the one place anyone is
+  looking at it. A node's own `content` wins where it has been loaded, and the
+  store is read only for files this tab has never opened. That is why
+  `findTasks` lives in `App.tsx` and is passed in: the tree is App's.
+- **A row opens the note; it doesn't tick the box.** Ticking would mean writing
+  a file that may be open in the other pane — an uncontrolled Crepe instance
+  holding its own copy of the document, whose next save would put the old text
+  straight back (see the invariant at the top of `panes.ts`). So the block
+  takes you to where the checkbox is and lets the editor that owns it do the
+  work. Worth knowing before anyone "just adds a checkbox to each row".
+- **A block hears about its own note and nothing else.** Rescanning the drive
+  on every keystroke would be absurd, so the trigger is the *answer* changing:
+  one pass over the document names the unfinished checkboxes in it, and typing
+  in a paragraph leaves that alone. A box ticked in another file, or another
+  tab, is what ↻ is for. The alternative is a subscription to the whole drive
+  for a block that might be listing four things.
+- **A checkbox inside a code fence is an example of one, not one.**
+  `openTasksIn` blanks fenced blocks before it looks, keeping the line count so
+  the numbers still point at the right line — without it a `todo` block would
+  list its own documentation.
+- **Only `.md`, `.markdown`, `.mdown` and `.txt` are read.** Everything else in
+  a drive is images and attachments, and the scan is a read per file.
+  `TASK_LIMIT` (200) is not a page size and nothing pages past it: the block is
+  a prompt to go and do something, and a thousand rows of it is not — the count
+  of what's left is the honest summary of a backlog that long.
+- **The fence system is built to hold more than one command.** `FENCE_COMMANDS`
+  is the list, `parseFence` is the single question "is this fence a command",
+  and `fenceMarkdown` writes one back — including picking a run of backticks
+  long enough to contain a body, which no command has yet. A language webfs
+  doesn't know stays a code block, so a note full of shell snippets doesn't
+  start sprouting todo lists.
+- **The slash menu item is in a group of webfs's own**, and is called "Todo
+  list" rather than anything more descriptive. Two reasons, both external:
+  Crepe's `getGroup` throws on a key it doesn't know, so reaching into its
+  "advanced" group would put the whole slash menu at the mercy of an upstream
+  rename; and the menu filters on the *label*, so "Unfinished checkboxes" is an
+  item that typing `/todo` — the name of the thing it writes — cannot find.
+- **Neither shows up in the plain-text view**, which is the source and shows
+  the fence as the four characters it is. That is the same rule the rest of
+  that view follows rather than an omission.
+
 ## Nothing is rewritten except where the user typed
 
 `preserve.ts` (pure, `preserve.test.ts`), the `markdownUpdated` handler in
@@ -1174,7 +1267,7 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
   (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `pdf`,
-  `wikilinks`, `vault`, `view`, `names`, `share`). The dev server is started by the
+  `wikilinks`, `vault`, `view`, `todo`, `names`, `share`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. **Run them under a UTF-8 locale** — under

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
-import { editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
-import { $node, $remark } from "@milkdown/kit/utils";
+import { editorViewCtx, editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
+import { $node, $prose, $remark, type $Node } from "@milkdown/kit/utils";
+import type { Ctx } from "@milkdown/kit/ctx";
+import { Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
+import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { Decoration, DecorationSet, type EditorView as ProseView } from "@milkdown/kit/prose/view";
 import { segmentsOf } from "./fs";
 import type { Store } from "./storage";
 import { ASSET_DIR, assetCandidates, assetName, isAbsoluteUrl, mimeOf } from "./assets";
@@ -17,6 +21,17 @@ import {
   wikiLinkMarkdown,
   type MarkdownNode,
 } from "./wikilinks";
+import {
+  FENCE_BLOCK,
+  TODO,
+  describeScope,
+  expandFences,
+  fenceMarkdown,
+  isFenceName,
+  type FenceName,
+  type MarkdownNode as FenceMarkdownNode,
+} from "./fences";
+import { isIdentity, openTasksIn, orderByDone, type TaskSummary } from "./tasks";
 // Import the common feature styles individually rather than the
 // `theme/common/style.css` bundle: that bundle pulls in `latex.css`, which
 // `@import`s KaTeX's full font set (~1.4MB of base64 fonts) even though the
@@ -42,6 +57,188 @@ import type { FSNode } from "./fs";
  */
 export type EditorView = "rich" | "text";
 
+/**
+ * How long after a checkbox changes a `todo` block looks again.
+ *
+ * Long enough for the edit to have reached the record App holds (that is
+ * written on the render after `onChange`, and the scan reads it), and short
+ * enough that ticking a box and glancing up is one action.
+ */
+const TODO_REFRESH_MS = 600;
+
+/** The slash menu's icon for the block, in the shape Crepe wants: raw SVG. */
+const CHECKLIST_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 7 2 2 4-4"/><path d="m3 17 2 2 4-4"/><path d="M13 8h8"/><path d="M13 18h8"/></svg>`;
+
+/**
+ * Wires up a control drawn inside the document, without ProseMirror seeing it.
+ *
+ * Everything the editor draws is inside the editable region as far as the
+ * browser is concerned, so an unguarded click would also move the selection —
+ * or, on a node that can be selected, select the block the button sits in.
+ * Swallowing the mouse events is what keeps pressing one of these from being
+ * an edit. `touchstart` is only stopped, never prevented: preventing it is
+ * what stops the browser sending the click that follows, and the button would
+ * then work with a mouse and not with a finger.
+ */
+function editorButton(element: HTMLElement, run: () => void): void {
+  const swallow = (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  element.addEventListener("touchstart", event => event.stopPropagation(), { passive: true });
+  element.addEventListener("mousedown", swallow);
+  element.addEventListener("click", event => {
+    swallow(event);
+    run();
+  });
+}
+
+// --- sorting a checkbox list -------------------------------------------------
+
+const LIST_TYPES = new Set(["bullet_list", "ordered_list"]);
+
+const isList = (node: ProseNode) => LIST_TYPES.has(node.type.name);
+
+/**
+ * Whether a list has checkboxes in it at all.
+ *
+ * GFM marks the *items*, not the list — `checked` is null on an ordinary
+ * bullet and a boolean on a checkbox — so this is the only way to ask.
+ */
+function hasCheckbox(list: ProseNode): boolean {
+  let found = false;
+  list.forEach(item => {
+    if (typeof item.attrs.checked === "boolean") found = true;
+  });
+  return found;
+}
+
+/**
+ * The list with its finished items moved to the end, or null if none moved.
+ *
+ * Null rather than an equal copy on purpose: it is what lets the caller
+ * dispatch nothing at all. A transaction re-serializes the document, and a
+ * button that rewrote the note every time it was pressed — including on a
+ * list already in order — would be a way to make a sync change by tidying
+ * something that was already tidy.
+ *
+ * Nested lists are sorted too, and they travel inside the item they belong to,
+ * so a sub-list stays under its parent wherever the parent lands.
+ */
+function sortedList(list: ProseNode): ProseNode | null {
+  const items: ProseNode[] = [];
+  let changed = false;
+  list.forEach(item => {
+    const deeper = sortedInside(item);
+    if (deeper) changed = true;
+    items.push(deeper ?? item);
+  });
+
+  const order = orderByDone(items.map(item => item.attrs.checked === true));
+  if (!isIdentity(order)) changed = true;
+  if (!changed) return null;
+  return list.type.create(list.attrs, Fragment.fromArray(order.map(index => items[index]!)), list.marks);
+}
+
+/** The same, applied to whatever lists are nested inside one item. */
+function sortedInside(item: ProseNode): ProseNode | null {
+  const children: ProseNode[] = [];
+  let changed = false;
+  item.forEach(child => {
+    const sorted = isList(child) ? sortedList(child) : null;
+    if (sorted) changed = true;
+    children.push(sorted ?? child);
+  });
+  return changed ? item.type.create(item.attrs, Fragment.fromArray(children), item.marks) : null;
+}
+
+/** Sorts the list that begins at `pos`, if one still does. */
+function sortListAt(view: ProseView, pos: number | undefined): void {
+  if (pos === undefined) return;
+  const list = view.state.doc.nodeAt(pos);
+  if (!list || !isList(list)) return;
+  const sorted = sortedList(list);
+  if (!sorted) return;
+  view.dispatch(view.state.tr.replaceWith(pos, pos + list.nodeSize, sorted));
+}
+
+/** The ⇅ itself. `getPos` is asked at click time, so a moved list is fine. */
+function sortHandle(view: ProseView, getPos: () => number | undefined): HTMLElement {
+  const holder = document.createElement("div");
+  holder.className = "task-sort";
+  holder.contentEditable = "false";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "task-sort-button";
+  button.textContent = "⇅";
+  const label = "Move finished items to the end";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  editorButton(button, () => sortListAt(view, getPos()));
+
+  holder.append(button);
+  return holder;
+}
+
+/**
+ * One handle per checkbox list, as a widget before it.
+ *
+ * Only the outermost gets one: a sort takes the lists below it along, and a
+ * button beside every level of a nested list would be four buttons doing the
+ * same thing. A widget rather than a node view because the button is not part
+ * of the document — nothing about it is written to the file — and a decoration
+ * is exactly the way to say that.
+ */
+function taskListHandles(doc: ProseNode): DecorationSet {
+  const widgets: Decoration[] = [];
+  doc.descendants((node, pos) => {
+    if (!isList(node)) return true;
+    if (!hasCheckbox(node)) return true;
+    widgets.push(
+      Decoration.widget(pos, (view, getPos) => sortHandle(view, getPos), {
+        side: -1,
+        key: `sort@${pos}`,
+        ignoreSelection: true,
+      }),
+    );
+    return false;
+  });
+  return DecorationSet.create(doc, widgets);
+}
+
+const sortKey = new PluginKey<DecorationSet>("webfsTaskListSort");
+
+/** Rebuilt only when the document changes; the doc is walked once per edit. */
+const sortTaskLists = () =>
+  new Plugin({
+    key: sortKey,
+    state: {
+      init: (_config, state) => taskListHandles(state.doc),
+      apply: (tr, current) => (tr.docChanged ? taskListHandles(tr.doc) : current),
+    },
+    props: {
+      decorations: state => sortKey.getState(state),
+    },
+  });
+
+/**
+ * Puts a command fence where the slash menu was typed.
+ *
+ * The whole paragraph is replaced rather than its text cleared and a block
+ * added after it: what is in there is the `/todo` that opened the menu, and
+ * nobody wants the empty line it would otherwise leave behind.
+ */
+function insertFence(ctx: Ctx, node: $Node, name: FenceName): void {
+  const view = ctx.get(editorViewCtx);
+  const { $from } = view.state.selection;
+  if ($from.depth === 0) return;
+  const block = node.type(ctx).create({ name, args: "", value: "" });
+  view.dispatch(
+    view.state.tr.replaceWith($from.before($from.depth), $from.after($from.depth), block).scrollIntoView(),
+  );
+}
+
 interface EditorProps {
   file: FSNode | null;
   view: EditorView;
@@ -57,6 +254,16 @@ interface EditorProps {
   onChange: (id: string, content: string) => void;
   /** A pasted image became a file; the tree and sync need to know. */
   onAssetAdded: () => void;
+  /**
+   * What a `todo` fence lists, for the scope it names.
+   *
+   * Passed in rather than done here because it reads every note in the drive,
+   * and the tree — with the text other tabs are holding, which hasn't reached
+   * disk yet — belongs to App. The editor only knows how to draw the answer.
+   */
+  findTasks: (scope: string) => Promise<TaskSummary>;
+  /** A row in a `todo` fence was clicked: go to the note the checkbox is in. */
+  onOpenFile: (id: string) => void;
 }
 
 interface MilkdownEditorProps {
@@ -64,14 +271,23 @@ interface MilkdownEditorProps {
   store: Store;
   onChange: (id: string, content: string) => void;
   onAssetAdded: () => void;
+  findTasks: (scope: string) => Promise<TaskSummary>;
+  onOpenFile: (id: string) => void;
 }
 
-function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorProps) {
+function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpenFile }: MilkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const onAssetAddedRef = useRef(onAssetAdded);
   onAssetAddedRef.current = onAssetAdded;
+  // Refs for the same reason the two above are: the editor is built once and
+  // holds these for its whole life, and a new function identity every render
+  // must not be a reason to tear Crepe down.
+  const findTasksRef = useRef(findTasks);
+  findTasksRef.current = findTasks;
+  const onOpenFileRef = useRef(onOpenFile);
+  onOpenFileRef.current = onOpenFile;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -266,6 +482,204 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorP
     });
 
     /**
+     * The `todo` blocks on screen, so an edit that changes what they list can
+     * tell them to look again.
+     *
+     * Pruned as it is walked rather than through some unmount hook ProseMirror
+     * doesn't offer: a node's DOM is rebuilt whenever the node instance
+     * changes, and the loader belonging to the DOM that was dropped would
+     * otherwise sit here for the life of the editor, re-reading the drive on
+     * every pass.
+     */
+    const todoBlocks = new Set<{ root: HTMLElement; load: () => void }>();
+
+    const refreshTodoBlocks = () => {
+      for (const block of todoBlocks) {
+        if (block.root.isConnected) block.load();
+        else todoBlocks.delete(block);
+      }
+    };
+
+    /** The rows of a `todo` block: what's unfinished, and where it lives. */
+    const renderTasks = ({ tasks, more }: TaskSummary): HTMLElement => {
+      if (tasks.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "todo-block-empty";
+        empty.textContent = "Nothing unfinished here.";
+        return empty;
+      }
+
+      const list = document.createElement("ul");
+      list.className = "todo-block-list";
+      for (const task of tasks) {
+        const row = document.createElement("li");
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "todo-block-item";
+        // The last segment on screen and the whole path in the tooltip: this
+        // is a column the width of a note, and a clipped path shows the half
+        // that doesn't identify it. The opposite trade to `commitTitle`.
+        open.title = `${task.file} · line ${task.line}`;
+        const text = document.createElement("span");
+        text.className = "todo-block-text";
+        text.textContent = task.text;
+        const where = document.createElement("span");
+        where.className = "todo-block-where";
+        where.textContent = task.file.split("/").pop() ?? task.file;
+        open.append(text, where);
+        // It opens the note; it doesn't tick the box. A file open in the other
+        // pane is an uncontrolled Crepe instance holding its own copy of the
+        // document (see the invariant at the top of panes.ts), and a write
+        // underneath it would be overwritten by its next save. So this takes
+        // you to where the checkbox is and lets the editor that owns it do it.
+        editorButton(open, () => onOpenFileRef.current(task.file));
+        row.append(open);
+        list.append(row);
+      }
+
+      if (more > 0) {
+        const rest = document.createElement("li");
+        rest.className = "todo-block-more";
+        rest.textContent = `…and ${more} more`;
+        list.append(rest);
+      }
+      return list;
+    };
+
+    /**
+     * A `todo` fence, drawn.
+     *
+     * The scan is asynchronous and `toDOM` isn't, so the block goes in saying
+     * what it is doing and fills when the answer lands — the same shape as a
+     * wiki embed above, for the same reason.
+     */
+    const renderTodoBlock = (args: string): HTMLElement => {
+      const root = document.createElement("div");
+      root.className = "todo-block";
+      root.contentEditable = "false";
+      root.dataset.fence = TODO;
+      root.dataset.fenceArgs = args;
+
+      const header = document.createElement("div");
+      header.className = "todo-block-header";
+      const title = document.createElement("span");
+      title.className = "todo-block-title";
+      title.textContent = "Unfinished";
+      const scope = document.createElement("span");
+      scope.className = "todo-block-scope";
+      scope.textContent = describeScope(args);
+      const again = document.createElement("button");
+      again.type = "button";
+      again.className = "todo-block-refresh";
+      again.textContent = "↻";
+      // A block only hears about the note it is in (see `noticeTasks` below),
+      // so this is how it hears about every other one.
+      const label = "Look again";
+      again.title = label;
+      again.setAttribute("aria-label", label);
+      header.append(title, scope, again);
+
+      const body = document.createElement("div");
+      body.className = "todo-block-body";
+      body.textContent = "Looking…";
+      root.append(header, body);
+
+      // A later scan always wins, so pressing ↻ twice can't leave the slower
+      // of the two answers on screen.
+      let generation = 0;
+      const load = () => {
+        const mine = ++generation;
+        void findTasksRef.current(args).then(
+          summary => {
+            if (mine === generation) body.replaceChildren(renderTasks(summary));
+          },
+          err => {
+            console.error("Failed to list unfinished checkboxes", err);
+            if (mine === generation) body.textContent = "Couldn't read the drive.";
+          },
+        );
+      };
+
+      editorButton(again, load);
+      todoBlocks.add({ root, load });
+      load();
+      return root;
+    };
+
+    /**
+     * A command fence as a node of its own.
+     *
+     * Atomic and not editable: what is on screen is read out of the drive, and
+     * the document holds only the fence that asked for it. Left as the `code`
+     * node remark parsed, Crepe hands it to CodeMirror and someone gets a code
+     * editor where they asked for a list.
+     */
+    const fenceNode = $node(FENCE_BLOCK, () => ({
+      group: "block",
+      atom: true,
+      selectable: true,
+      isolating: true,
+      attrs: { name: { default: TODO }, args: { default: "" }, value: { default: "" } },
+      parseDOM: [
+        {
+          tag: "div[data-fence]",
+          getAttrs: (dom: HTMLElement | string) =>
+            typeof dom === "string"
+              ? { name: TODO, args: "", value: "" }
+              : { name: dom.dataset.fence ?? TODO, args: dom.dataset.fenceArgs ?? "", value: "" },
+        },
+      ],
+      // `todo` is the only command there is, and `parseFence` is what decides
+      // a node gets made at all — so a node here always has one it can draw.
+      toDOM: (node: { attrs: Record<string, unknown> }) => renderTodoBlock(String(node.attrs.args ?? "")),
+      parseMarkdown: {
+        match: (node: FenceMarkdownNode) => node.type === FENCE_BLOCK,
+        runner: (state, node, type) => {
+          state.addNode(type, {
+            name: isFenceName(node.name) ? node.name : TODO,
+            args: String(node.args ?? ""),
+            value: String(node.value ?? ""),
+          });
+        },
+      },
+      toMarkdown: {
+        match: node => node.type.name === FENCE_BLOCK,
+        runner: (state, node) => {
+          state.addNode(FENCE_BLOCK, undefined, undefined, {
+            name: node.attrs.name,
+            args: node.attrs.args,
+            value: node.attrs.value,
+          });
+        },
+      },
+    }));
+
+    /**
+     * Both halves again: the fences remark parsed as code blocks are lifted
+     * into nodes, and a stringify handler writes them back as the fence they
+     * came from. Without the handler remark refuses to serialize a node type
+     * it has never heard of.
+     */
+    const fenceRemark = $remark(FENCE_BLOCK, () => function remarkFenceCommand(this: {
+      data: () => { toMarkdownExtensions?: unknown[] };
+    }) {
+      const data = this.data();
+      const extensions = (data.toMarkdownExtensions ??= []);
+      extensions.push({
+        handlers: {
+          [FENCE_BLOCK]: (node: FenceMarkdownNode) =>
+            fenceMarkdown(
+              { name: isFenceName(node.name) ? node.name : TODO, args: String(node.args ?? "") },
+              String(node.value ?? ""),
+            ),
+        },
+      });
+      return (tree: unknown) => {
+        expandFences(tree as FenceMarkdownNode);
+      };
+    });
+
+    /**
      * The file as it is on disk, and what the serializer makes of it.
      *
      * Milkdown re-serializes the whole document on every change, so saving its
@@ -277,6 +691,34 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorP
     let stored = file.content ?? "";
     let baseline: string | null = null;
 
+    /**
+     * Tells the `todo` blocks in this note when one of its checkboxes has
+     * changed.
+     *
+     * Rescanning the drive on every keystroke would be absurd, so the trigger
+     * is the answer changing rather than the document changing: one pass over
+     * the text names the unfinished checkboxes in it, and typing in a
+     * paragraph leaves that alone. Ticking a box, or editing the words in one,
+     * moves it, and the blocks look again.
+     *
+     * Only this note, though. A box ticked in another tab or another file is
+     * what ↻ is for — anything more would be a subscription to the whole drive
+     * for a block that might be listing four things.
+     */
+    const taskSignature = (text: string) => JSON.stringify(openTasksIn(text));
+    let saidTasks = taskSignature(stored);
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const noticeTasks = (text: string) => {
+      const said = taskSignature(text);
+      if (said === saidTasks) return;
+      saidTasks = said;
+      clearTimeout(refreshTimer);
+      // Debounced past the render that puts this edit into the record the scan
+      // reads, as well as past the next few keystrokes.
+      refreshTimer = setTimeout(refreshTodoBlocks, TODO_REFRESH_MS);
+    };
+
     const crepe = new Crepe({
       root: containerRef.current,
       defaultValue: file.content ?? "",
@@ -284,6 +726,21 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorP
         [Crepe.Feature.Latex]: false,
       },
       featureConfigs: {
+        [Crepe.Feature.BlockEdit]: {
+          buildMenu: builder => {
+            // Its own group rather than one of Crepe's: `getGroup` throws on a
+            // key it doesn't know, so reaching into "advanced" would put the
+            // whole slash menu at the mercy of an upstream rename.
+            builder.addGroup("webfs", "Tracking").addItem(TODO, {
+              // Named for the fence rather than for what it does: the menu
+              // filters on the label, so "Unfinished checkboxes" is an item
+              // that typing `/todo` cannot find.
+              label: "Todo list",
+              icon: CHECKLIST_ICON,
+              onRun: ctx => insertFence(ctx, fenceNode, TODO),
+            });
+          },
+        },
         [Crepe.Feature.ImageBlock]: {
           onUpload: storeImage,
           blockOnUpload: storeImage,
@@ -332,7 +789,13 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorP
         },
       }));
     });
-    crepe.editor.use(wikiImageRemark).use(wikiImageNode).use(wikiLinkNode);
+    crepe.editor
+      .use(wikiImageRemark)
+      .use(wikiImageNode)
+      .use(wikiLinkNode)
+      .use(fenceRemark)
+      .use(fenceNode)
+      .use($prose(() => sortTaskLists()));
     crepe.on(listener => {
       listener.markdownUpdated((_ctx, markdown) => {
         // What the file itself says, in the serializer's dialect. Worked out
@@ -371,12 +834,14 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded }: MilkdownEditorP
         if (text === stored) return; // Nothing for the file to say differently.
         stored = text;
         onChangeRef.current(file.id, text);
+        noticeTasks(text);
       });
     });
     const ready = crepe.create();
     ready.catch(err => console.error("Failed to create Milkdown editor", err));
 
     return () => {
+      clearTimeout(refreshTimer);
       ready.then(() => crepe.destroy()).catch(() => {});
       for (const url of objectUrls) URL.revokeObjectURL(url);
     };
@@ -527,7 +992,16 @@ function BinaryFile({ file, store }: { file: FSNode; store: Store }) {
   );
 }
 
-export function Editor({ file, view, store, externalEdit, onChange, onAssetAdded }: EditorProps) {
+export function Editor({
+  file,
+  view,
+  store,
+  externalEdit,
+  onChange,
+  onAssetAdded,
+  findTasks,
+  onOpenFile,
+}: EditorProps) {
   if (!file) {
     return (
       <div className="editor editor-empty">
@@ -571,6 +1045,8 @@ export function Editor({ file, view, store, externalEdit, onChange, onAssetAdded
           store={store}
           onChange={onChange}
           onAssetAdded={onAssetAdded}
+          findTasks={findTasks}
+          onOpenFile={onOpenFile}
         />
       )}
     </div>
