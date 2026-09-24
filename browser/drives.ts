@@ -9,7 +9,7 @@
  * to be driven here.
  */
 import type { Browser } from "playwright";
-import { APP_URL, Checks, addLocalDrive, asText, openApp, openFile, opfsFiles, switchToDrive, typeInEditor, waitUntil } from "./harness";
+import { Checks, addLocalDrive, asText, openApp, openFile, opfsFiles, switchToDrive, typeInEditor, waitUntil } from "./harness";
 
 export default async function run(browser: Browser): Promise<number> {
   const checks = new Checks("several drives");

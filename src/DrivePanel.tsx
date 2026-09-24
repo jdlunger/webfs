@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { GitHubRemote } from "./github";
-import { describeProgress, progressPercent, type SyncProgress } from "./sync";
+import { describeProgress, progressPercent } from "./sync";
 import {
   DRIVES_DIR,
   LOCAL_SCHEME,
