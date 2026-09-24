@@ -680,6 +680,47 @@ body.resizing-sidebar {
   background: #101010;
 }
 
+/* A PDF fills the pane, because it is the document rather than a preview of
+   one. The note under it is the iOS escape hatch (see BinaryFile) and has to
+   stay on screen, so the frame takes the space that's left rather than a
+   share of it. */
+.pdf-file {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
+  background: #1c1c1c;
+}
+
+.pdf-note {
+  margin: 0;
+  padding: 8px 12px;
+  /* The safe-area inset keeps the link clear of the home indicator, since
+     this sits hard against the bottom of the window. */
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid #2c2c2c;
+  color: #777;
+  font-size: 12px;
+  text-align: center;
+}
+
+.pdf-note a {
+  color: #6aa9e9;
+}
+
+/* Hidden rather than absent: the picker it opens needs a real input in the
+   document, and it's opened from a menu that unmounts on the click. */
+.import-input {
+  display: none;
+}
+
 /* --- context menu -------------------------------------------------------- */
 
 /* Portalled to <body>, so it sits above the mobile drawer rather than inside

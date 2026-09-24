@@ -976,12 +976,63 @@ you're looking at syncs — see Drives above.
   image opened from the sidebar would be destroyed by looking at it.
   `FSNode.binary` is set when a read fails to decode, and `Editor` renders a
   preview instead. This is why `App.tsx` reads the selected file with
-  `readBytes` + `decodeText` rather than `readFile`.
+  `readBytes` + `decodeText` rather than `readFile`. A format whose bytes
+  might decode anyway — a PDF — is settled by extension before the read; see
+  PDFs below.
 - **`resolveAssetPath` refuses to leave the store**, so a link with enough
   `..` in it resolves to null rather than to something outside. It also
   requires the link to name something: without that, an empty link resolved
   to the note's own folder, which is a directory. `assets.test.ts` covers
   both, which is how the second one was found.
+
+## PDFs, and importing a file from the device
+
+`assets.ts` (`mimeOf`, `neverText`, `importName`), `BinaryFile` in
+`Editor.tsx`, `handleImport` in `App.tsx`, the menu item and the drop
+handlers in `Sidebar.tsx`. Driven by `bun run browser pdf`.
+
+- **The browser's own viewer renders it, through an iframe over an object
+  URL.** Every desktop browser and Android Chrome ship a PDF viewer; a bundled
+  renderer would be several times the size of this whole app, to do what is
+  already there.
+- **iOS Safari is the exception, and it's the platform this is most used on.**
+  It draws a PDF in an iframe as a single non-scrolling page, or as nothing.
+  There is no page-side fix, so the frame always carries a link that opens the
+  object URL in a new tab, where Safari shows the document properly. That link
+  is the feature on iOS, not a nicety — don't hide it behind a UA check, which
+  would be wrong the moment Safari changes.
+- **A `.pdf` is never text, whatever its bytes decode to.** `decodeText` asks
+  "is this valid UTF-8 with no NULs", which is a good proxy for every binary
+  file and a guarantee for none: a small uncompressed PDF is all-ASCII, so
+  without `neverText` in front of it the read effect hands the bytes to Crepe,
+  which renders them and saves its reading of them over the file — an image
+  destroyed by being looked at, exactly as before, but for a file that *looks*
+  like text. The browser suite builds precisely that PDF, and disabling the
+  guard fails it.
+- **SVG is deliberately not in that list.** It is a picture and text at once,
+  it round-trips through the editor, and editing one by hand is reasonable.
+- **Importing is how bytes get in without a repository.** Before this the only
+  ways were a pasted image and a sync pulling one, so a PDF could be read here
+  but never put here — and on a local drive, never at all. There are two
+  routes, for the two kinds of device: "Import Files…" in the folder and
+  empty-area context menus (which is the tap-friendly one, and the only one on
+  a phone), and dropping files onto the tree from outside the browser.
+- **A drop is either an import or a move, and the handler has to tell.** The
+  tree's rows and background already accept dropped *rows*; a drag carrying
+  `Files` is the other thing, and `carriesFiles` is the one-line test that
+  splits them. Dropping onto a file row means "into that file's folder", the
+  same way a move does.
+- **The file input lives outside the menu that opens it.** The menu unmounts
+  on the click that calls `input.click()`, and would take the input with it
+  before a file was ever chosen. It also clears `value` before importing, or
+  picking the same file twice in a row fires no second change event.
+- **`importName` has its own fallback**, rather than sharing `assetName`'s.
+  A pasted image really is a PNG; an import is whatever was picked, and
+  calling a spreadsheet `image-….png` is a lie the editor would then act on.
+- Chromium's viewer shows the object URL's UUID in its toolbar where a
+  filename would go. Nothing to do about it short of serving the file from a
+  real path through the service worker, which is a lot of machinery for a
+  caption.
 
 ## Obsidian embeds (`![[image.png]]`)
 
@@ -1122,11 +1173,15 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `wikilinks`,
-  `vault`, `view`, `names`, `share`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `pdf`,
+  `wikilinks`, `vault`, `view`, `names`, `share`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
-  that already exists. Not in CI — they take about a minute and want a real
+  that already exists. **Run them under a UTF-8 locale** — under
+  `LC_CTYPE=POSIX` the `names` suite fails on a bogus `TypeMismatchError`
+  from Chromium rather than anything in this repo (see Storage above), which
+  reads exactly like a regression someone just caused. `LC_ALL=C.UTF-8` is
+  enough. Not in CI — they take about a minute and want a real
   browser — so run them by hand after touching sync, storage or the editor.
 - **`FakeGitHub` refuses what the real API refuses**, which is the point of
   it rather than a detail: git-object endpoints 409 while a repo has no

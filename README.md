@@ -32,6 +32,19 @@ Right-click (or press and hold, on a touch screen) a file or folder in the
 sidebar for rename, move and delete, and for creating a file or folder inside
 it.
 
+## Other files
+
+**Import Files…** in that same menu copies files from the device into the
+folder you opened it on; on a computer you can also drag them onto the tree.
+They sync like anything else.
+
+Images and PDFs are displayed when you open them, and nothing else about them
+is touched — a file that isn't text is never opened in the editor. A PDF is
+shown by the browser's own viewer, which every desktop browser and Android
+Chrome have. **iOS Safari does not display a PDF inside a page**, so the line
+under it always offers to open the document in a new tab, where it reads
+properly.
+
 ## Obsidian vaults
 
 Notes written in Obsidian link their images with `![[Pasted image 2026.png]]`

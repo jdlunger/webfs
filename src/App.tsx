@@ -41,6 +41,7 @@ import {
   splitPane,
 } from "./panes";
 import { BASE_PATH } from "./basePath";
+import { importName, neverText } from "./assets";
 import { decodeText } from "./github";
 import { mergeText } from "./merge";
 import {
@@ -599,6 +600,16 @@ export function App() {
       // it binary *is* an fs change, so the two chase each other forever.
       if (!node || node.type !== "file" || node.content !== undefined || node.binary) continue;
 
+      // A format that is never text is marked as such without being read at
+      // all. `decodeText` is a good proxy and not a guarantee — a small
+      // uncompressed PDF can be valid UTF-8 — and a false "this is text" is
+      // the expensive way to be wrong: Crepe would render the bytes and save
+      // its reading of them over the file.
+      if (neverText(node.name)) {
+        setFs(prev => (prev ? markFileBinary(prev, id) : prev));
+        continue;
+      }
+
       // Bytes, then decode: reading an image as text would hand the editor
       // U+FFFD soup, which its first save would write back over the original.
       void store.readBytes(segmentsOf(id)).then(stored => {
@@ -874,6 +885,28 @@ export function App() {
     });
   };
 
+  /**
+   * Writes files chosen on this device into a folder.
+   *
+   * The only other way bytes get in is a sync pulling them, so without this a
+   * PDF could be read here but never put here — and on a local drive, never
+   * at all. Goes through `mutate` like any other structural change, which is
+   * what refreshes the tree, tells the other tabs and dates the arrivals.
+   */
+  const handleImport = (parentId: string, files: readonly File[]) => {
+    if (!fs || files.length === 0) return;
+    const parent = segmentsOf(parentId);
+    void mutate(async () => {
+      for (const file of files) {
+        // `createFile` returns the name actually used, which may have been
+        // uniquified — importing the same photo twice is not a mistake to
+        // resolve by overwriting the first one.
+        const name = await store.createFile(parent, importName(file.name));
+        await store.writeFile([...parent, name], new Uint8Array(await file.arrayBuffer()));
+      }
+    });
+  };
+
   const handleDelete = (id: string) => {
     if (!fs) return;
     const segments = segmentsOf(id);
@@ -980,6 +1013,7 @@ export function App() {
         onSelectFile={handleSelectFile}
         onOpenBeside={wide ? handleOpenBeside : null}
         onCreate={handleCreate}
+        onImport={handleImport}
         onDelete={handleDelete}
         onRename={handleRename}
         onMove={handleMove}

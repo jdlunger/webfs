@@ -55,6 +55,8 @@ interface SidebarProps {
   /** Opens a file in the other pane. Null on narrow screens, which don't split. */
   onOpenBeside: ((id: string) => void) | null;
   onCreate: (parentId: string, type: "file" | "folder") => void;
+  /** Writes files chosen on this device into a folder. */
+  onImport: (parentId: string, files: readonly File[]) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onMove: (id: string, newParentId: string) => void;
@@ -63,6 +65,13 @@ interface SidebarProps {
 }
 
 const DRAG_MIME = "application/x-webfs-node-id";
+
+/**
+ * Whether a drag is carrying files from outside the browser rather than a row
+ * from this tree. The two land on the same handlers and mean opposite things:
+ * one is a move within the drive, the other is an import into it.
+ */
+const carriesFiles = (transfer: DataTransfer) => transfer.types.includes("Files");
 
 interface MoveTarget {
   id: string;
@@ -226,6 +235,22 @@ export function Sidebar(props: SidebarProps) {
   const [searching, setSearching] = useState(false);
   const sortButton = useRef<HTMLButtonElement>(null);
 
+  /**
+   * One file input for the whole tree, told which folder to import into.
+   *
+   * A hidden `<input type="file">` rather than the File System Access API's
+   * picker: this has to work in Safari, which doesn't have that one, and the
+   * bytes are all either way. It lives outside the menu it's opened from,
+   * because the menu unmounts on the click that opens the picker and would
+   * take the input with it before a file was ever chosen.
+   */
+  const fileInput = useRef<HTMLInputElement>(null);
+  const importInto = useRef<string>(ROOT_ID);
+  const chooseFiles = (parentId: string) => {
+    importInto.current = parentId;
+    fileInput.current?.click();
+  };
+
   // Null when nothing is typed, which is what tells every row below to draw
   // the whole tree rather than a filtered one.
   const visible = useMemo(() => searchTree(props.fs, query), [props.fs, query]);
@@ -253,6 +278,7 @@ export function Sidebar(props: SidebarProps) {
       return [
         { label: "New File", onSelect: () => props.onCreate(ROOT_ID, "file") },
         { label: "New Folder", onSelect: () => props.onCreate(ROOT_ID, "folder") },
+        { label: "Import Files…", onSelect: () => chooseFiles(ROOT_ID) },
       ];
     }
 
@@ -261,6 +287,7 @@ export function Sidebar(props: SidebarProps) {
     if (node.type === "folder") {
       items.push({ label: "New File", onSelect: () => props.onCreate(node.id, "file") });
       items.push({ label: "New Folder", onSelect: () => props.onCreate(node.id, "folder") });
+      items.push({ label: "Import Files…", onSelect: () => chooseFiles(node.id) });
     } else {
       items.push({ label: "Open", onSelect: () => props.onSelectFile(node.id) });
       if (props.onOpenBeside) {
@@ -339,7 +366,7 @@ export function Sidebar(props: SidebarProps) {
         className={`sidebar-tree ${rootDragOver ? "drop-target" : ""}`}
         {...backgroundTrigger}
         onDragOver={e => {
-          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+          if (!e.dataTransfer.types.includes(DRAG_MIME) && !carriesFiles(e.dataTransfer)) return;
           e.preventDefault();
           setRootDragOver(true);
         }}
@@ -347,6 +374,12 @@ export function Sidebar(props: SidebarProps) {
         onDrop={e => {
           e.preventDefault();
           setRootDragOver(false);
+          // Files from outside the browser are an import; anything else is a
+          // row of this tree being moved.
+          if (carriesFiles(e.dataTransfer)) {
+            props.onImport(ROOT_ID, [...e.dataTransfer.files]);
+            return;
+          }
           const id = e.dataTransfer.getData(DRAG_MIME);
           if (id) props.onMove(id, ROOT_ID);
         }}
@@ -370,12 +403,27 @@ export function Sidebar(props: SidebarProps) {
               onSelectFile={props.onSelectFile}
               onRename={props.onRename}
               onMove={props.onMove}
+              onImport={props.onImport}
               onStartRename={setRenamingId}
               onOpenMenu={openNodeMenu}
             />
           ))}
         {visible && visible.size === 0 ? <p className="sidebar-empty">No files match “{query.trim()}”.</p> : null}
       </div>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        className="import-input"
+        onChange={event => {
+          const files = [...(event.target.files ?? [])];
+          // Cleared before the import runs, so picking the same file again
+          // still fires a change event — the input keeps its value otherwise
+          // and the second attempt does nothing at all.
+          event.target.value = "";
+          props.onImport(importInto.current, files);
+        }}
+      />
       {props.footer}
       {/* No handle on a phone: the sidebar is a fixed-width drawer there, and
           a drag target down its edge would fight the tree's own scrolling. */}
@@ -401,12 +449,13 @@ interface TreeNodeProps {
   onSelectFile: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onMove: (id: string, newParentId: string) => void;
+  onImport: (parentId: string, files: readonly File[]) => void;
   onStartRename: (id: string | null) => void;
   onOpenMenu: (node: FSNode, position: MenuPosition) => void;
 }
 
 function TreeNode(props: TreeNodeProps) {
-  const { node, depth, fs, selectedId, openIds, collapsed, sortBy, created, visible, renamingId, onSelectFile, onRename, onMove, onStartRename } =
+  const { node, depth, fs, selectedId, openIds, collapsed, sortBy, created, visible, renamingId, onSelectFile, onRename, onMove, onImport, onStartRename } =
     props;
   // A folder is open unless it's been closed, so a folder that appears later —
   // created here, or pulled by a sync — shows its contents rather than hiding
@@ -444,7 +493,7 @@ function TreeNode(props: TreeNodeProps) {
       e.dataTransfer.setData(DRAG_MIME, node.id);
     },
     onDragOver: (e: DragEvent) => {
-      if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+      if (!e.dataTransfer.types.includes(DRAG_MIME) && !carriesFiles(e.dataTransfer)) return;
       e.preventDefault();
       e.stopPropagation();
       setDragOver(true);
@@ -457,9 +506,15 @@ function TreeNode(props: TreeNodeProps) {
       e.preventDefault();
       e.stopPropagation();
       setDragOver(false);
+      // A file row stands for its folder here, the same way it does for a
+      // move: dropping onto `todo.md` means "next to todo.md".
+      const destinationFolderId = node.type === "folder" ? node.id : node.parentId ?? ROOT_ID;
+      if (carriesFiles(e.dataTransfer)) {
+        onImport(destinationFolderId, [...e.dataTransfer.files]);
+        return;
+      }
       const draggedId = e.dataTransfer.getData(DRAG_MIME);
       if (!draggedId) return;
-      const destinationFolderId = node.type === "folder" ? node.id : node.parentId ?? ROOT_ID;
       onMove(draggedId, destinationFolderId);
     },
   };
@@ -531,6 +586,7 @@ function TreeNode(props: TreeNodeProps) {
               onSelectFile={onSelectFile}
               onRename={onRename}
               onMove={onMove}
+              onImport={onImport}
               onStartRename={onStartRename}
               onOpenMenu={props.onOpenMenu}
             />

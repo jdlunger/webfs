@@ -461,9 +461,13 @@ export function ViewToggle({
 function BinaryFile({ file, store }: { file: FSNode; store: Store }) {
   const [preview, setPreview] = useState<string | null>(null);
   const type = mimeOf(file.name);
+  const pdf = type === "application/pdf";
+  // Everything else is bytes as far as this app is concerned, and reading a
+  // file it can't show would mint an object URL for nothing.
+  const showable = pdf || type.startsWith("image/");
 
   useEffect(() => {
-    if (!type.startsWith("image/")) return;
+    if (!showable) return;
     let url: string | null = null;
     let cancelled = false;
     void store.readBytes(segmentsOf(file.id)).then(bytes => {
@@ -475,7 +479,43 @@ function BinaryFile({ file, store }: { file: FSNode; store: Store }) {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [file.id, store, type]);
+  }, [file.id, showable, store, type]);
+
+  /*
+    A PDF is shown by handing the bytes to the browser's own viewer, through
+    an iframe over an object URL — no viewer library, because every desktop
+    browser and Android Chrome already ship one and a bundled renderer would
+    be several times the size of this whole app.
+
+    iOS Safari is the exception, and the one that matters most here: it
+    renders a PDF in an iframe as a single non-scrolling page, or as nothing
+    at all. There is no page-side fix for that, so the link below is not a
+    nicety — it is the way to read the document on the platform this app is
+    most used on, and it stays visible everywhere rather than being hidden
+    behind a UA sniff that would be wrong the moment Safari changes.
+  */
+  if (pdf) {
+    return (
+      <div className="editor">
+        <div className="pdf-file">
+          {preview ? (
+            <>
+              <iframe className="pdf-frame" src={preview} title={file.name} />
+              <p className="pdf-note">
+                Shown by this browser's PDF viewer.{" "}
+                <a href={preview} target="_blank" rel="noopener noreferrer">
+                  Open it in a new tab
+                </a>{" "}
+                if it doesn't display here — on iOS it won't.
+              </p>
+            </>
+          ) : (
+            <p className="pdf-note">Loading…</p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="editor">

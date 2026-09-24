@@ -25,7 +25,7 @@ export const ASSET_DIR = "assets";
  */
 export const MEDIA_DIR = "Media";
 
-const IMAGE_TYPES: Record<string, string> = {
+const FILE_TYPES: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -35,9 +35,39 @@ const IMAGE_TYPES: Record<string, string> = {
   svg: "image/svg+xml",
   bmp: "image/bmp",
   ico: "image/x-icon",
+  pdf: "application/pdf",
 };
 
-export const mimeOf = (path: string) => IMAGE_TYPES[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? "application/octet-stream";
+const extensionOf = (path: string) => path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+
+/**
+ * The type to hand the DOM for a file's bytes.
+ *
+ * Only the handful webfs can actually show. Anything else is
+ * `application/octet-stream`, which is the honest answer: the browser is
+ * being told "bytes", and the editor renders the "nothing to edit here"
+ * panel rather than guessing.
+ */
+export const mimeOf = (path: string) => FILE_TYPES[extensionOf(path)] ?? "application/octet-stream";
+
+/**
+ * Formats that are never text, whatever their bytes happen to decode to.
+ *
+ * `decodeText` answers "are these bytes valid UTF-8", which is a good enough
+ * proxy for almost every binary file and not a guarantee for any of them: a
+ * small uncompressed PDF can be all-ASCII and NUL-free, and one that decoded
+ * would be opened in Crepe and destroyed by the first keystroke — the same
+ * way an image would be, and for the same reason. An extension is a weaker
+ * signal in general but a certain one here: nothing with these names is a
+ * document someone means to edit as text.
+ *
+ * SVG is deliberately absent. It is a picture *and* text, it round-trips
+ * through the editor intact, and editing one by hand is a reasonable thing
+ * to want.
+ */
+const BINARY_TYPES = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "pdf"]);
+
+export const neverText = (name: string) => BINARY_TYPES.has(extensionOf(name));
 
 /** A URL webfs shouldn't touch: one a browser can already load by itself. */
 export const isAbsoluteUrl = (url: string) => /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//") || url.startsWith("/");
@@ -117,9 +147,25 @@ export function assetCandidates(noteId: string, url: string): string[][] {
   return candidates;
 }
 
+/** The last segment of a name a file arrived with, or null if it's unusable. */
+function givenName(original: string): string | null {
+  const base = original.split(/[\\/]/).pop()?.trim() ?? "";
+  return base && base !== "." && base !== ".." ? base : null;
+}
+
 /** Keeps the pasted file's name where it's usable, and invents one where it isn't. */
 export function assetName(original: string): string {
-  const base = original.split(/[\\/]/).pop()?.trim() ?? "";
-  if (base && base !== "." && base !== "..") return base;
-  return `image-${Date.now()}.png`;
+  return givenName(original) ?? `image-${Date.now()}.png`;
+}
+
+/**
+ * The same, for a file imported from the device.
+ *
+ * A different fallback, because the invented name is the one thing these two
+ * can't share: a pasted image really is a PNG, where an import is whatever
+ * the user picked, and calling a spreadsheet `image-…png` would be a lie the
+ * editor then acts on.
+ */
+export function importName(original: string): string {
+  return givenName(original) ?? `file-${Date.now()}`;
 }

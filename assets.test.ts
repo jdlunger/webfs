@@ -4,7 +4,7 @@
  * since the same relative link is read by both.
  */
 import { test, expect } from "bun:test";
-import { assetCandidates, assetName, isAbsoluteUrl, mimeOf, resolveAssetPath } from "./src/assets";
+import { assetCandidates, assetName, importName, isAbsoluteUrl, mimeOf, neverText, resolveAssetPath } from "./src/assets";
 import { branchUrl } from "./src/DrivePanel";
 
 test("a link resolves against the folder of the note it appears in", () => {
@@ -90,8 +90,36 @@ test("the content type follows the extension, and is never guessed as text", () 
   expect(mimeOf("a/b/shot.PNG")).toBe("image/png");
   expect(mimeOf("shot.jpg")).toBe("image/jpeg");
   expect(mimeOf("drawing.svg")).toBe("image/svg+xml");
+  // What the editor hands an iframe, which is what makes a PDF show at all.
+  expect(mimeOf("Papers/thesis.PDF")).toBe("application/pdf");
   expect(mimeOf("mystery.bin")).toBe("application/octet-stream");
   expect(mimeOf("noextension")).toBe("application/octet-stream");
+});
+
+/**
+ * `decodeText` is a good proxy for "is this text" and not a guarantee: a
+ * small uncompressed PDF can be all-ASCII and NUL-free, and one that decoded
+ * would be opened in Crepe and saved back as the editor's reading of it.
+ */
+test("a format that is never text is never offered to the editor", () => {
+  expect(neverText("thesis.pdf")).toBe(true);
+  expect(neverText("Papers/THESIS.PDF")).toBe(true);
+  expect(neverText("shot.png")).toBe(true);
+  expect(neverText("notes.md")).toBe(false);
+  expect(neverText("noextension")).toBe(false);
+  // An SVG is a picture *and* text, it round-trips through the editor, and
+  // editing one by hand is a reasonable thing to want.
+  expect(neverText("drawing.svg")).toBe(false);
+});
+
+test("an imported file keeps its own name, and isn't called an image when it can't", () => {
+  expect(importName("thesis.pdf")).toBe("thesis.pdf");
+  expect(importName("C:\\Users\\me\\thesis.pdf")).toBe("thesis.pdf");
+  expect(importName("  spaced name.pdf  ")).toBe("spaced name.pdf");
+  // The invented name is the one thing this can't share with `assetName`:
+  // a pasted image really is a PNG, an import is whatever was picked.
+  expect(importName("")).toMatch(/^file-\d+$/);
+  expect(assetName("")).toMatch(/^image-\d+\.png$/);
 });
 
 test("the sidebar link points at the branch being synced, not just the repo", () => {

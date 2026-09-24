@@ -16,9 +16,10 @@ import names from "./names";
 import share from "./share";
 import view from "./view";
 import drives from "./drives";
+import pdf from "./pdf";
 import sidebar from "./sidebar";
 
-const suites = { sync, "empty-repo": emptyRepo, images, panes, drives, sidebar, wikilinks, vault, view, names, share } as const;
+const suites = { sync, "empty-repo": emptyRepo, images, panes, drives, sidebar, wikilinks, vault, view, names, share, pdf } as const;
 
 const requested = process.argv.slice(2);
 const unknown = requested.filter(name => !(name in suites));
