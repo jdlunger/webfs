@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
-import { $node, $prose, $remark, type $Node } from "@milkdown/kit/utils";
+import { liftListItemCommand, sinkListItemCommand } from "@milkdown/kit/preset/commonmark";
+import { $node, $prose, $remark, callCommand, type $Node } from "@milkdown/kit/utils";
 import type { Ctx } from "@milkdown/kit/ctx";
 import { Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView as ProseView } from "@milkdown/kit/prose/view";
 import { segmentsOf } from "./fs";
+import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
 import type { Store } from "./storage";
 import { ASSET_DIR, assetCandidates, assetName, isAbsoluteUrl, mimeOf } from "./assets";
 import { preserveUnchanged } from "./preserve";
@@ -297,6 +299,19 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
   onOpenFileRef.current = onOpenFile;
   const onCompleteTaskRef = useRef(onCompleteTask);
   onCompleteTaskRef.current = onCompleteTask;
+  /**
+   * Set once `crepe.create()` resolves, cleared on unmount — so a tap on the
+   * indent buttons below can't reach a half-built or already-torn-down
+   * editor. Not state: nothing here needs a re-render, only a place for the
+   * click handlers to find the live instance.
+   */
+  const crepeRef = useRef<Crepe | null>(null);
+  /**
+   * Sink/lift-list-item is bound to Tab/Shift-Tab, which is how a keyboard
+   * reaches it — and which iOS's on-screen keyboard has no key for at all.
+   * Shown only where there's no Tab key to press.
+   */
+  const wide = useMediaQuery(WIDE_SCREEN);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -877,10 +892,11 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
       });
     });
     const ready = crepe.create();
-    ready.catch(err => console.error("Failed to create Milkdown editor", err));
+    ready.then(() => (crepeRef.current = crepe)).catch(err => console.error("Failed to create Milkdown editor", err));
 
     return () => {
       clearTimeout(refreshTimer);
+      crepeRef.current = null;
       ready.then(() => crepe.destroy()).catch(() => {});
       for (const url of objectUrls) URL.revokeObjectURL(url);
     };
@@ -893,7 +909,59 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, store]);
 
-  return <div className="milkdown-root" ref={containerRef} />;
+  /**
+   * Runs a list-item command against *this* editor, not whichever one last
+   * called `.create()` — `sinkListItemCommand`/`liftListItemCommand` are
+   * module-level singletons shared by every Crepe instance (a split pane
+   * mounts two), so calling `.run()` on them directly would reach through to
+   * whichever one registered it last. `editor.action` is scoped to the
+   * instance it's called on, which is what keeps a tap in one pane from
+   * indenting a list in the other.
+   */
+  const runListCommand = (key: typeof sinkListItemCommand.key) => {
+    crepeRef.current?.editor.action(callCommand(key));
+  };
+
+  return (
+    <>
+      {!wide && (
+        // The one thing here with no touch equivalent otherwise: Tab/Shift-Tab
+        // indent a list item, and iOS's on-screen keyboard has no Tab key to
+        // press. `onPointerDown` with `preventDefault`, not `onClick` — a
+        // button is outside the ProseMirror DOM, so an ordinary click first
+        // steals focus (and with it the selection the command acts on),
+        // which is the same reason Crepe's own floating toolbar binds its
+        // buttons this way rather than to a click.
+        <div className="indent-toolbar">
+          <button
+            type="button"
+            className="indent-toolbar-button"
+            title="Outdent"
+            aria-label="Outdent list item"
+            onPointerDown={e => {
+              e.preventDefault();
+              runListCommand(liftListItemCommand.key);
+            }}
+          >
+            ⇤
+          </button>
+          <button
+            type="button"
+            className="indent-toolbar-button"
+            title="Indent"
+            aria-label="Indent list item"
+            onPointerDown={e => {
+              e.preventDefault();
+              runListCommand(sinkListItemCommand.key);
+            }}
+          >
+            ⇥
+          </button>
+        </div>
+      )}
+      <div className="milkdown-root" ref={containerRef} />
+    </>
+  );
 }
 
 /**

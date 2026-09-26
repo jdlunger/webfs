@@ -73,6 +73,50 @@ position and undo history, so never bump it for local typing.
   the OS for any editable region and can't be suppressed from the page; only
   the predictive-text suggestion strip responds to the attributes above.
 
+## Indenting on a phone
+
+The two buttons at the top of a Milkdown pane on a narrow screen. All in
+`Editor.tsx`. Driven by `bun run browser indent`.
+
+Milkdown's own indent/outdent — sink and lift a list item — is bound only to
+`Tab` and `Shift-Tab` (a Milkdown keymap, not a browser default). A hardware
+keyboard sends those; iOS's on-screen keyboard has no Tab key at all, so
+without this there was no way to indent a list on a phone, full stop.
+
+- **The buttons call the same commands the keys do**, not a re-implementation
+  of them: `sinkListItemCommand`/`liftListItemCommand` from
+  `@milkdown/kit/preset/commonmark` are exactly what Milkdown's own `Tab`
+  keymap entry calls. A tap is the keystroke with a different trigger.
+- **`editor.action(callCommand(key))`, not the command's own `.run()`.**
+  Milkdown's `$command` helper hangs `.run()` off the same module-level object
+  every Crepe instance shares — a split pane mounts two — and each `.create()`
+  overwrites it to point at *that* instance's `ctx`. Calling `.run()` directly
+  would reach whichever pane's editor was built most recently, not the one the
+  button is drawn in. `editor.action` is scoped to the specific `Crepe`
+  instance it's called on, which is what keeps a tap in one pane from editing
+  the other's document. In practice this can't yet happen through the UI —
+  the toolbar and the split view are mutually exclusive, one narrow-screen and
+  the other wide — but the safe form was no harder to write than the unsafe
+  one, and remains correct if that ever changes.
+- **The command runs against `crepeRef`, a ref set once `crepe.create()`
+  resolves and cleared on unmount** — not the `crepe` the effect's closure
+  already has. A tap on a leftover instance mid-mount or mid-teardown would
+  otherwise try to act on an editor that isn't fully there.
+- **`onPointerDown`, not `onClick`, and `preventDefault` inside it.** A button
+  is outside the ProseMirror DOM, so an ordinary click first moves focus to
+  the button — taking the text selection the command is supposed to act on
+  with it — and only *then* fires. By the time `onClick` ran, there'd be
+  nothing to indent. This is the same reason Crepe's own floating selection
+  toolbar binds its buttons to `pointerdown` rather than `click`.
+- **Shown only where `WIDE_SCREEN` doesn't match** (`Editor.tsx`, not a CSS
+  media query): a screen with room for a keyboard shortcut doesn't need a
+  button for it, and there's no mounting cost to hiding this one in JS the
+  way there is for a second pane, so a plain conditional is enough.
+- **Plain text only — the code-block editor (CodeMirror) has its own separate
+  Tab keymap** (`indentWithTab`, bundled with Crepe's code-block feature) and
+  isn't reached by this at all. Out of scope here: a code block's own indent
+  is a different editor entirely.
+
 ## The plain-text view
 
 The toggle at the top right of a pane (`ViewToggle` in `Editor.tsx`, rendered
@@ -408,6 +452,8 @@ hamburger button. Notes learned the hard way:
   Safari; both have tap-friendly equivalents in that menu (Rename, and a
   "Move to…" submenu listing every folder path) alongside the desktop-only
   double-click/drag affordances.
+- Indenting a list item is `Tab`/`Shift-Tab`, and iOS's on-screen keyboard has
+  no Tab key — see "Indenting on a phone" below.
 - Use `100dvh`, not `100vh` (Safari's address bar resizes the viewport), and
   `env(safe-area-inset-*)` padding for anything pinned to a screen edge.
 - Crepe's default content padding/heading sizes are tuned for a wide desktop
@@ -1315,8 +1361,8 @@ any of that, and every bug that reached a user came from exactly there — an
 empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
-  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `pdf`,
-  `wikilinks`, `vault`, `view`, `todo`, `names`, `share`). The dev server is started by the
+  (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `indent`,
+  `pdf`, `wikilinks`, `vault`, `view`, `todo`, `names`, `share`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. **Run them under a UTF-8 locale** — under
