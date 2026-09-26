@@ -34,9 +34,10 @@ it.
 
 ## Other files
 
-**Import Files…** in that same menu copies files from the device into the
-folder you opened it on; on a computer you can also drag them onto the tree.
-They sync like anything else.
+The **⤓** button at the top of the sidebar copies files from this device into
+the drive. **Import Files…** in any right-click or long-press menu does the
+same into the folder you opened it on, and on a computer you can drag files
+onto the tree. They sync like anything else.
 
 Images and PDFs are displayed when you open them, and nothing else about them
 is touched — a file that isn't text is never opened in the editor. A PDF is

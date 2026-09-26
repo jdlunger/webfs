@@ -332,7 +332,9 @@ The two buttons at the top of the sidebar. `searchTree` and `childrenOf` in
 - **The mobile drawer drops the "Files" title**, because four tap-sized
   buttons and a title don't fit across it — what wrapped was `+ File` and
   `+ Folder`, folded in half. A drawer full of file names doesn't need to be
-  labelled.
+  labelled. The drawer now shows three buttons rather than four (see
+  `ROOM_FOR_LABELS` under PDFs below), so the title would fit again; it stays
+  hidden because the reason above is still true.
 
 ### Creation dates (`createdAt.ts`)
 
@@ -1014,10 +1016,25 @@ handlers in `Sidebar.tsx`. Driven by `bun run browser pdf`.
   it round-trips through the editor, and editing one by hand is reasonable.
 - **Importing is how bytes get in without a repository.** Before this the only
   ways were a pasted image and a sync pulling one, so a PDF could be read here
-  but never put here — and on a local drive, never at all. There are two
-  routes, for the two kinds of device: "Import Files…" in the folder and
-  empty-area context menus (which is the tap-friendly one, and the only one on
-  a phone), and dropping files onto the tree from outside the browser.
+  but never put here — and on a local drive, never at all. Four routes now:
+  the header's import button, "Import Files…" in every context menu (a
+  folder's, a file's, and the empty area's), and dropping files onto the tree
+  from outside the browser.
+- **A file row imports into that file's folder.** Which is what dropping onto
+  one already meant. It was folders and empty space only at first, and the
+  menu someone naturally opens is the one on the row they can see.
+- **The header's import is an icon, and the create buttons collapse below
+  260px** (`ROOM_FOR_LABELS` in `Sidebar.tsx`). Both fall out of measurement
+  rather than taste, and the thing being measured is not what it looks like:
+  these buttons do not overflow their row when space runs out, they **fold in
+  half** — "+ File" onto two lines — which no assertion about widths or
+  `scrollWidth` catches. Three labelled buttons need 300px of sidebar and the
+  default is 260, so import is an icon; two labelled ones need 260, so below
+  that they become one "+" that opens the tree background's own menu, which
+  lists all three actions and is why the icon stands down with them. That fold
+  had already been happening at the narrowest drag (160–200px) with just the
+  two, unnoticed, and the collapse fixes it. `bun run browser sidebar`
+  measures button *height* at four widths to keep it fixed.
 - **A drop is either an import or a move, and the handler has to tell.** The
   tree's rows and background already accept dropped *rows*; a drag carrying
   `Files` is the other thing, and `carriesFiles` is the one-line test that

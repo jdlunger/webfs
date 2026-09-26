@@ -213,6 +213,45 @@ export default async function run(browser: Browser): Promise<number> {
   });
   checks.ok("a rename carries the creation date with it", carried, JSON.stringify(await createdIndex(page, "opfs/notes")));
 
+  // --- the header fits, at every width it can be dragged to --------------------
+
+  // The buttons don't overflow the row when they run out of space, they fold
+  // in half ("+ File" onto two lines), which no assertion about widths
+  // catches — so this measures their height. It has happened twice: once at
+  // phone width, where it cost the drawer its "Files" title, and again at the
+  // narrowest drag, where it went unnoticed until a third button was added.
+  const foldedButtons = () =>
+    page.locator(".sidebar-header-actions button").evaluateAll(buttons =>
+      buttons.filter(button => button.getBoundingClientRect().height > 26).length,
+    );
+
+  for (const width of [160, 200, 260, 400]) {
+    await page.evaluate(w => localStorage.setItem("webfs:sidebar:width", String(w)), width);
+    await page.reload();
+    await page.waitForSelector(".tree-row", { timeout: 15_000 });
+    checks.ok(`nothing in the header folds in half at ${width}px`, (await foldedButtons()) === 0);
+  }
+
+  // Wide enough for words; narrower, the pair becomes one "+" that says the
+  // same things in a menu — which is what keeps them from folding.
+  await page.evaluate(() => localStorage.setItem("webfs:sidebar:width", "400"));
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  checks.ok("a wide sidebar labels its create buttons", (await page.locator('.sidebar-header-actions button:has-text("+ Folder")').count()) === 1);
+  checks.ok("and shows the import button beside search and sort",
+    (await page.locator('.sidebar-header-actions button[aria-label="Import files from this device"]').count()) === 1);
+
+  await page.evaluate(() => localStorage.setItem("webfs:sidebar:width", "180"));
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  checks.ok("a narrow one collapses them", (await page.locator('.sidebar-header-actions button:has-text("+ Folder")').count()) === 0);
+  await page.locator(".sidebar-header-actions button").last().click();
+  await page.waitForSelector(".context-menu", { timeout: 5_000 });
+  const collapsed = await page.locator(".context-menu-item").allInnerTexts();
+  checks.ok("into a menu that still offers all three", 
+    ["New File", "New Folder", "Import Files…"].every(item => collapsed.some(text => text.startsWith(item))),
+    collapsed.join(" / "));
+
   await context.close();
   return checks.failures;
 }

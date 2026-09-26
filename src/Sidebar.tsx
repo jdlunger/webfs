@@ -67,6 +67,42 @@ interface SidebarProps {
 const DRAG_MIME = "application/x-webfs-node-id";
 
 /**
+ * Sidebar width, in px, below which the header's create buttons collapse to a
+ * single "+".
+ *
+ * Measured, not guessed. Below this the labelled buttons don't overflow the
+ * row — they fold in half, "+ File" onto two lines, which is unreadable and
+ * is what cost the mobile drawer its "Files" title once already. That was
+ * happening at the narrowest drag before this change too, with only two of
+ * them, so collapsing to the menu fixes it there as well.
+ */
+const ROOM_FOR_LABELS = 260;
+
+/**
+ * Drawn rather than typed, for the reason `DriveIcon` is: the arrow glyphs
+ * that would say this (U+2913 and its neighbours) are in far fewer fonts than
+ * the magnifier and the sort arrows beside it, and a blank square in the
+ * header reads as a broken app.
+ */
+function ImportIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 2v7.2M5.2 6.6 8 9.4l2.8-2.8M2.8 11.4v1.2a1.4 1.4 0 0 0 1.4 1.4h7.6a1.4 1.4 0 0 0 1.4-1.4v-1.2" />
+    </svg>
+  );
+}
+
+/**
  * Whether a drag is carrying files from outside the browser rather than a row
  * from this tree. The two land on the same handlers and mean opposite things:
  * one is a move within the drive, the other is an import into it.
@@ -234,6 +270,15 @@ export function Sidebar(props: SidebarProps) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const sortButton = useRef<HTMLButtonElement>(null);
+  const createButton = useRef<HTMLButtonElement>(null);
+  /**
+   * Whether the header has room to say what its buttons do, in words.
+   *
+   * The phone drawer never does, whatever the stored width says: at 320px it
+   * is 262px wide and the four buttons that were there came to 227px of the
+   * 230px inside its padding.
+   */
+  const roomForLabels = wide && width >= ROOM_FOR_LABELS;
 
   /**
    * One file input for the whole tree, told which folder to import into.
@@ -293,6 +338,10 @@ export function Sidebar(props: SidebarProps) {
       if (props.onOpenBeside) {
         items.push({ label: "Open to the Side", onSelect: () => props.onOpenBeside?.(node.id) });
       }
+      // Into the folder the file is in, which is what dropping onto a file row
+      // already means. A row that offers no way to import is a row you have to
+      // know to aim past.
+      items.push({ label: "Import Files…", onSelect: () => chooseFiles(node.parentId ?? ROOT_ID) });
     }
     items.push({ label: "Rename", dividerBefore: true, onSelect: () => setRenamingId(node.id) });
     items.push({
@@ -332,12 +381,49 @@ export function Sidebar(props: SidebarProps) {
           >
             ⇅
           </button>
-          <button title="New file" onClick={() => props.onCreate(ROOT_ID, "file")}>
-            + File
-          </button>
-          <button title="New folder" onClick={() => props.onCreate(ROOT_ID, "folder")}>
-            + Folder
-          </button>
+          {/*
+            Import is an icon rather than a third labelled button: measured,
+            three labels need 300px of sidebar where the default is 260. As an
+            icon it joins search and sort, and the labelled pair still fits.
+          */}
+          {roomForLabels ? (
+            <button
+              className="icon-button"
+              title="Import files from this device"
+              aria-label="Import files from this device"
+              onClick={() => chooseFiles(ROOT_ID)}
+            >
+              <ImportIcon />
+            </button>
+          ) : null}
+          {/*
+            The two create buttons, as words where there's room and as a
+            single "+" where there isn't (see ROOM_FOR_LABELS). The menu it
+            opens is the tree background's own — "+" and a long press on the
+            empty area mean the same thing, act on the drive's root — and it
+            lists importing too, which is why the icon above stands down with
+            them rather than being left on its own.
+          */}
+          {roomForLabels ? (
+            <>
+              <button title="New file" onClick={() => props.onCreate(ROOT_ID, "file")}>
+                + File
+              </button>
+              <button title="New folder" onClick={() => props.onCreate(ROOT_ID, "folder")}>
+                + Folder
+              </button>
+            </>
+          ) : (
+            <button
+              ref={createButton}
+              className="icon-button"
+              title="New file, new folder, or import"
+              aria-label="New file, new folder, or import"
+              onClick={() => setMenu({ kind: "background", position: menuPositionBelow(createButton.current) })}
+            >
+              ＋
+            </button>
+          )}
         </div>
       </div>
       {searching ? (

@@ -101,6 +101,31 @@ export default async function run(browser: Browser): Promise<number> {
   checks.ok("and looking at it leaves the file byte-identical", after === base64,
     `${asText(after ?? "").slice(0, 40)}…`);
 
+  // --- the other two ways in --------------------------------------------------------
+
+  // The header button, which is the one you can find without knowing to
+  // right-click. It imports into the drive's root.
+  const headerChooser = page.waitForEvent("filechooser");
+  await page.click('.sidebar-header-actions button[aria-label="Import files from this device"]');
+  await (await headerChooser).setFiles({ name: "from-header.pdf", mimeType: "application/pdf", buffer: pdf });
+  checks.ok(
+    "the header's import button writes into the drive's root",
+    await waitUntil("the header import", async () => (await opfsFiles(page))["from-header.pdf"] === base64),
+    Object.keys(await opfsFiles(page)).join(", "),
+  );
+
+  // A *file* row, which imports beside that file — the same thing dropping
+  // onto one means. Without this the menu you'd naturally open is the one
+  // that doesn't offer it.
+  const rowChooser = page.waitForEvent("filechooser");
+  await chooseFromContextMenu(page, '.tree-row:has-text("thesis.pdf")', "Import Files…");
+  await (await rowChooser).setFiles({ name: "beside.pdf", mimeType: "application/pdf", buffer: pdf });
+  checks.ok(
+    "a file row imports into that file's folder, not the root",
+    await waitUntil("the row import", async () => (await opfsFiles(page))["Notes/beside.pdf"] === base64),
+    Object.keys(await opfsFiles(page)).join(", "),
+  );
+
   // --- dropping one in -------------------------------------------------------------
 
   // A synthesized drop: what's under test is the handler telling an external
