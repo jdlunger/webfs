@@ -6,14 +6,7 @@
  * time it's pressed.
  */
 import { test, expect } from "bun:test";
-import {
-  findOpenTasks,
-  inScope,
-  isIdentity,
-  openTasksIn,
-  orderByDone,
-  parseTaskLine,
-} from "./src/tasks";
+import { findOpenTasks, inScope, isBlankTask, isIdentity, openTasksIn, orderByDone, parseTaskLine, setTaskChecked } from "./src/tasks";
 import type { FileSystem, FSNode } from "./src/fs";
 
 test("a checkbox line is taken apart, and everything else isn't one", () => {
@@ -125,4 +118,77 @@ test("past the limit it counts rather than lists", async () => {
     ],
     more: 1,
   });
+});
+
+// --- a checkbox that says nothing --------------------------------------------
+
+test("a blank checkbox is not a task anyone can do", () => {
+  // Spacers, both of them: one someone left to type into later, and the other
+  // what an empty line inside a list looks like once an editor has been near
+  // it. The screenshot that prompted this had `<br />` as a row of its own.
+  expect(isBlankTask("")).toBe(true);
+  expect(isBlankTask("   ")).toBe(true);
+  expect(isBlankTask("<br />")).toBe(true);
+  expect(isBlankTask("<br>")).toBe(true);
+  expect(isBlankTask("<BR/>")).toBe(true);
+  expect(isBlankTask("&nbsp;")).toBe(true);
+  expect(isBlankTask("<br /> &nbsp; <br>")).toBe(true);
+});
+
+test("markup around real words is still a task", () => {
+  // The opposite mistake, and the worse one: stripping tags in general would
+  // drop a task that only *looks* like markup.
+  expect(isBlankTask("<b>ship it</b>")).toBe(false);
+  expect(isBlankTask("write <br /> docs")).toBe(false);
+  expect(isBlankTask("&nbsp;x")).toBe(false);
+});
+
+test("a todo block skips the blank ones and keeps the rest", () => {
+  const text = ["- [ ] Gmail integration", "- [ ] <br />", "- [ ]", "- [ ] Server stuff"].join("\n");
+  expect(openTasksIn(text)).toEqual([
+    { line: 1, text: "Gmail integration" },
+    { line: 4, text: "Server stuff" },
+  ]);
+});
+
+// --- ticking one off from a block --------------------------------------------
+
+const note = ["# Plans", "", "- [ ] Gmail integration", "\t* [ ] Server stuff  ", "- [x] Done already"].join("\n");
+
+test("ticking rewrites that one line and leaves the rest alone", () => {
+  const next = setTaskChecked(note, 3, "Gmail integration", true);
+  expect(next?.split("\n")).toEqual([
+    "# Plans",
+    "",
+    "- [x] Gmail integration",
+    "\t* [ ] Server stuff  ",
+    "- [x] Done already",
+  ]);
+  // The tab, the `*`, the two trailing spaces: a line nobody touched comes
+  // back byte for byte, the same rule the editor follows.
+  const nested = setTaskChecked(note, 4, "Server stuff", true);
+  expect(nested?.split("\n")[3]).toBe("\t* [x] Server stuff  ");
+});
+
+test("it refuses when the file has moved on since the list was made", () => {
+  // The line is a checkbox, but not the one that was listed — someone inserted
+  // a line, or the block is seconds old. This is the case that would tick the
+  // wrong box, and the only defence against it is refusing.
+  expect(setTaskChecked(note, 4, "Gmail integration", true)).toBeNull();
+  // Already in the state being asked for: nothing to do, and saying so keeps
+  // the block from writing a file to change nothing.
+  expect(setTaskChecked(note, 5, "Done already", true)).toBeNull();
+  // Not a checkbox at all, and off the end.
+  expect(setTaskChecked(note, 1, "# Plans", true)).toBeNull();
+  expect(setTaskChecked(note, 99, "Gmail integration", true)).toBeNull();
+});
+
+test("unticking is the same swap the other way", () => {
+  expect(setTaskChecked(note, 5, "Done already", false)?.split("\n")[4]).toBe("- [ ] Done already");
+  expect(setTaskChecked(note, 3, "Gmail integration", false)).toBeNull();
+});
+
+test("a checkbox in the text can't be mistaken for the box itself", () => {
+  const tricky = "- [ ] fix the [x] in the README";
+  expect(setTaskChecked(tricky, 1, "fix the [x] in the README", true)).toBe("- [x] fix the [x] in the README");
 });

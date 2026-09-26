@@ -630,6 +630,14 @@ body.resizing-sidebar {
     min-height: 44px;
   }
 
+  /* The box itself stays small; the room around it is what a finger needs. */
+  .todo-block-tick {
+    width: 18px;
+    height: 18px;
+    margin-left: 10px;
+    padding: 12px;
+  }
+
   .todo-block-refresh {
     width: 36px;
     height: 36px;
@@ -796,6 +804,31 @@ body.resizing-sidebar {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* The row is the checkbox and the button beside it: the tick changes a file,
+   the rest opens it, and they have to be separately hittable. */
+.todo-block-list li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.todo-block-tick {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0 0 0 8px;
+  accent-color: #4a90e2;
+  cursor: pointer;
+}
+
+/* Pressed, it stays checked while the write goes through the record, the
+   queue and — if that note is on screen — a remount. It is about to be
+   replaced by a fresh list; until then it should look done, not busy. */
+.todo-block-tick:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .todo-block-item {

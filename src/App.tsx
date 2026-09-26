@@ -42,7 +42,7 @@ import {
 } from "./panes";
 import { BASE_PATH } from "./basePath";
 import { importName, neverText } from "./assets";
-import { findOpenTasks } from "./tasks";
+import { findOpenTasks, setTaskChecked } from "./tasks";
 import { decodeText } from "./github";
 import { mergeText } from "./merge";
 import {
@@ -976,6 +976,54 @@ export function App() {
     [],
   );
 
+  /**
+   * Ticks a checkbox a `todo` block is listing, in a file that may not be the
+   * one on screen. Answers whether it actually happened.
+   *
+   * The block hands back the line and the text it listed, and `setTaskChecked`
+   * refuses unless the file still says exactly that — the list can be seconds
+   * old, and a line number from a stale one is how you tick the wrong box.
+   * A refusal isn't an error: the block reloads either way, so what comes back
+   * is the truth rather than the answer it was hoping for.
+   *
+   * Then it goes out the way *any* text this app didn't type goes out, which
+   * is the part that makes this safe to do to a file someone else's editor may
+   * be holding: into the record, into the write queue, and — if that file is
+   * on screen — a remount, because a Crepe instance owns an uncontrolled copy
+   * of its document and would write the old text back over this on its next
+   * save. That is the same route a sync's changes take (`applySyncResult`),
+   * for exactly the same reason. It costs the undo history of the note being
+   * ticked, which is the price of not needing to reach into another pane's
+   * editor and hope.
+   */
+  const completeTask = useCallback(
+    async (file: string, line: number, text: string): Promise<boolean> => {
+      const node = fsRef.current?.[file];
+      if (node?.type !== "file") return false;
+      // What this tab holds, which is ahead of disk while a save is pending;
+      // the store only for a file it has never opened.
+      const current = node.content ?? (await storeRef.current.readFile(segmentsOf(file)));
+      if (current === null || current === undefined) return false;
+
+      const next = setTaskChecked(current, line, text, true);
+      if (next === null) return false;
+
+      // The ref as well as the state, and this is not belt and braces: the
+      // block reloads the moment this resolves, and what it reloads *from* is
+      // this ref — which React only reassigns on the next render. Without it
+      // the list comes back still showing the row that was just ticked, which
+      // is the one thing the reload exists to prevent. Both are computed from
+      // the same tree, so they can't disagree.
+      const tree = fsRef.current;
+      if (tree) fsRef.current = updateFileContent(tree, file, next);
+      setFs(prev => (prev ? updateFileContent(prev, file, next) : prev));
+      scheduleWrite(file, next);
+      bumpExternalEdit(file);
+      return true;
+    },
+    [bumpExternalEdit, scheduleWrite],
+  );
+
   const handleContentChange = (id: string, content: string) => {
     setFs(prev => (prev ? updateFileContent(prev, id, content) : prev));
     scheduleWrite(id, content);
@@ -1112,6 +1160,7 @@ export function App() {
                 onChange={handleContentChange}
                 onAssetAdded={handleAssetAdded}
                 findTasks={findTasks}
+                onCompleteTask={completeTask}
                 onOpenFile={handleSelectFile}
               />
             </div>

@@ -126,14 +126,60 @@ function withoutFences(lines: readonly string[]): string[] {
   });
 }
 
+/**
+ * Whether a checkbox says nothing, so a `todo` block shouldn't list it.
+ *
+ * Not just `""`. A vault has spacer items in it — a checkbox someone left
+ * blank to type into later, and `- [ ] <br />`, which is what an empty line
+ * inside a list looks like once an editor has been near it. Those are
+ * scaffolding, and a block listing them offers you a row you cannot do.
+ *
+ * Only whitespace and markup that *is* whitespace is removed. Stripping tags
+ * in general would turn `<b>ship it</b>` into a blank, which is the opposite
+ * mistake and a worse one: a real task, silently dropped.
+ */
+const BLANK_MARKUP = /<br\s*\/?>|&nbsp;|&#(?:160|x0*a0);|[\s\u00a0\u200b-\u200d\ufeff]/gi;
+
+export function isBlankTask(text: string): boolean {
+  return text.replace(BLANK_MARKUP, "") === "";
+}
+
 /** The unfinished checkboxes in one file's text, in the order they appear. */
 export function openTasksIn(text: string): Array<{ line: number; text: string }> {
   const found: Array<{ line: number; text: string }> = [];
   withoutFences(text.split("\n")).forEach((line, index) => {
     const task = parseTaskLine(line);
-    if (task && !task.checked && task.text) found.push({ line: index + 1, text: task.text });
+    if (task && !task.checked && !isBlankTask(task.text)) found.push({ line: index + 1, text: task.text });
   });
   return found;
+}
+
+/**
+ * Ticks (or unticks) one checkbox, or refuses.
+ *
+ * This is the whole of how a `todo` block is allowed to change a file it is
+ * not showing, so it is a compare-and-swap rather than an edit: the line has
+ * to still be a checkbox, still be in the state it was listed in, and still
+ * say the same thing. Anything else and it returns null, because the file has
+ * moved on since the scan — someone typed in it, a sync pulled, another tab
+ * wrote — and a line number from a stale list is exactly how you tick the
+ * wrong box. Refusing costs a refresh; getting it wrong costs trust in every
+ * row in the block.
+ *
+ * The line is edited rather than rebuilt, so indentation, the bullet
+ * character, the spacing and anything trailing survive untouched — the same
+ * rule the rest of this app follows about not rewriting what nobody typed.
+ * The first `[…]` on the line is the checkbox: `TASK` matched it at the
+ * start, so nothing in the text can be ahead of it.
+ */
+export function setTaskChecked(text: string, line: number, expected: string, checked: boolean): string | null {
+  const lines = text.split("\n");
+  const current = lines[line - 1];
+  if (current === undefined) return null;
+  const task = parseTaskLine(current);
+  if (!task || task.checked === checked || task.text !== expected) return null;
+  lines[line - 1] = current.replace(/\[[ xX]\]/, checked ? "[x]" : "[ ]");
+  return lines.join("\n");
 }
 
 /**

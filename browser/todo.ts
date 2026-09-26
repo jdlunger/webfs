@@ -25,7 +25,9 @@ const CHORES_TEXT = [
 ].join("\n");
 
 const REPORT = "Work/Reports.md";
-const REPORT_TEXT = ["# Reports", "", "- [ ] Send the Q3 numbers", ""].join("\n");
+// The `<br />` is what an empty line inside a list looks like once an editor
+// has been near it, and it turned up as a row of its own in a real block.
+const REPORT_TEXT = ["# Reports", "", "- [ ] Send the Q3 numbers", "- [ ] <br />", "- [ ]", ""].join("\n");
 
 const BOARD = "Board.md";
 const BOARD_TEXT = [
@@ -42,6 +44,10 @@ const BOARD_TEXT = [
   "```",
   "",
 ].join("\n");
+
+const OWN = "Own.md";
+/** A block and a checkbox in one note: the case where ticking has to remount. */
+const OWN_TEXT = ["# Mine", "", "```todo Own.md", "```", "", "- [ ] Tidy the board", ""].join("\n");
 
 export default async function run(browser: Browser): Promise<number> {
   const checks = new Checks("checkbox lists and the todo fence");
@@ -121,6 +127,13 @@ export default async function run(browser: Browser): Promise<number> {
     !everything.includes("Take the bins out") && !everything.includes("Book the dentist"),
     JSON.stringify(everything),
   );
+  // A checkbox with nothing in it is scaffolding, not work: a row offering
+  // `<br />` is a row you cannot do.
+  checks.ok(
+    "and nothing for the blank checkboxes",
+    everything.every(text => text.trim() !== "" && !text.includes("<br")),
+    JSON.stringify(everything),
+  );
 
   const work = await textsOf(1);
   checks.ok(
@@ -141,6 +154,69 @@ export default async function run(browser: Browser): Promise<number> {
     async () => (await page.locator(".pane-focused .tab-active").first().getAttribute("title")) === CHORES,
   );
   checks.ok("clicking a row opens the note the checkbox is in", arrived);
+
+  // --- ticking one off -------------------------------------------------------
+
+  // The row's checkbox writes to a file the block isn't showing, which is the
+  // whole difficulty: it goes through the record and the write queue, the same
+  // way a sync's changes do.
+  await openFile(page, BOARD);
+  await waitUntil("the block to fill again", async () => (await textsOf(0)).length > 0);
+  const row = (text: string) => blocks.nth(0).locator(`li:has(.todo-block-text:text-is("${text}"))`);
+
+  // Read before rather than comparing against the fixture: the ⇅ above has
+  // already reordered this note, and what is being asserted is "only the one
+  // line changed", not "the file is what it was when the suite started".
+  const beforeTick = asText((await opfsFiles(page))[CHORES] ?? "");
+  await row("Change the filter").locator(".todo-block-tick").click();
+
+  const ticked = await waitUntil("the checkbox to be ticked in the file it lives in", async () =>
+    asText((await opfsFiles(page))[CHORES] ?? "").includes("- [x] Change the filter"),
+  );
+  checks.ok("ticking a row writes [x] into the note that holds it", ticked, asText((await opfsFiles(page))[CHORES] ?? ""));
+  // The bytes, not the row: the one failure that matters here is ticking the
+  // *wrong* box, and on screen that looks exactly like ticking the right one.
+  const afterTick = asText((await opfsFiles(page))[CHORES] ?? "");
+  checks.ok(
+    "and leaves every other line of it exactly as it was",
+    afterTick === beforeTick.replace("- [ ] Change the filter", "- [x] Change the filter"),
+    JSON.stringify(afterTick),
+  );
+  checks.ok(
+    "the row goes away, because the block asks again rather than striking it out",
+    await waitUntil("the row to go", async () => !(await textsOf(0)).includes("Change the filter")),
+    JSON.stringify(await textsOf(0)),
+  );
+
+  // Now the hard case: the checkbox is in the note the block itself is in, so
+  // the editor on screen is holding an uncontrolled copy of that document. It
+  // has to be remounted, or its next save would put the unticked text back.
+  // Its own note rather than Board.md, which later checks read byte for byte.
+  await writeOpfsFile(page, OWN, OWN_TEXT);
+  await page.reload();
+  await page.waitForSelector(".tree-row", { timeout: 15_000 });
+  await openFile(page, OWN);
+  await waitUntil("the block to list the note's own checkbox", async () => (await textsOf(0)).includes("Tidy the board"));
+  await row("Tidy the board").locator(".todo-block-tick").click();
+
+  const own = await waitUntil("the note's own checkbox to be ticked", async () =>
+    asText((await opfsFiles(page))[OWN] ?? "").includes("- [x] Tidy the board"),
+  );
+  checks.ok("ticking a checkbox in the note you are looking at works too", own, asText((await opfsFiles(page))[OWN] ?? ""));
+  // Crepe draws a task checkbox as an icon span, not an `<input>` — so this
+  // reads its `checked`/`unchecked` class rather than a checkbox's state.
+  // (The only `<input type=checkbox>` inside the editor is the block's own
+  // tick, which is why looking for one found the wrong thing first.)
+  const label = ".pane-focused .milkdown-root .ProseMirror .label";
+  checks.ok(
+    "and the editor on screen shows it ticked, rather than writing the old text back",
+    await waitUntil(
+      "the editor to come back ticked",
+      async () =>
+        (await page.locator(`${label}.checked`).count()) === 1 &&
+        (await page.locator(`${label}.unchecked`).count()) === 0,
+    ),
+  );
 
   // --- and the fence survives being typed around -----------------------------
 

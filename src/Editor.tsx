@@ -264,6 +264,12 @@ interface EditorProps {
   findTasks: (scope: string) => Promise<TaskSummary>;
   /** A row in a `todo` fence was clicked: go to the note the checkbox is in. */
   onOpenFile: (id: string) => void;
+  /**
+   * Tick a checkbox a `todo` fence is listing, in whatever file holds it.
+   * Answers false when the file has moved on since the scan, which is the
+   * block's cue to show what is actually there now.
+   */
+  onCompleteTask: (file: string, line: number, text: string) => Promise<boolean>;
 }
 
 interface MilkdownEditorProps {
@@ -273,9 +279,10 @@ interface MilkdownEditorProps {
   onAssetAdded: () => void;
   findTasks: (scope: string) => Promise<TaskSummary>;
   onOpenFile: (id: string) => void;
+  onCompleteTask: (file: string, line: number, text: string) => Promise<boolean>;
 }
 
-function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpenFile }: MilkdownEditorProps) {
+function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpenFile, onCompleteTask }: MilkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -288,6 +295,8 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
   findTasksRef.current = findTasks;
   const onOpenFileRef = useRef(onOpenFile);
   onOpenFileRef.current = onOpenFile;
+  const onCompleteTaskRef = useRef(onCompleteTask);
+  onCompleteTaskRef.current = onCompleteTask;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -500,8 +509,16 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
       }
     };
 
-    /** The rows of a `todo` block: what's unfinished, and where it lives. */
-    const renderTasks = ({ tasks, more }: TaskSummary): HTMLElement => {
+    /**
+     * The rows of a `todo` block: what's unfinished, and where it lives.
+     *
+     * `reload` is how a tick gets back on screen. Rather than striking the row
+     * out where it is, the block asks again — so what you are looking at is
+     * what the drive says, including when the tick was *refused* because the
+     * file had moved on. A row that lied about being ticked would be worse
+     * than one that reappears.
+     */
+    const renderTasks = ({ tasks, more }: TaskSummary, reload: () => void): HTMLElement => {
       if (tasks.length === 0) {
         const empty = document.createElement("p");
         empty.className = "todo-block-empty";
@@ -513,6 +530,30 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
       list.className = "todo-block-list";
       for (const task of tasks) {
         const row = document.createElement("li");
+
+        // A real checkbox rather than a styled span: this is the one control
+        // in the block that changes a file, and everything that expects a
+        // checkbox — a screen reader, a keyboard, a long-press — should find
+        // one. It is disabled the moment it is pressed, because the write
+        // goes through the record and the queue and the row is about to be
+        // replaced; a second press in that window would be a second tick
+        // against a list that no longer exists.
+        const tick = document.createElement("input");
+        tick.type = "checkbox";
+        tick.className = "todo-block-tick";
+        tick.title = "Tick this off";
+        tick.setAttribute("aria-label", `Tick off: ${task.text}`);
+        editorButton(tick, () => {
+          if (tick.disabled) return;
+          tick.disabled = true;
+          tick.checked = true;
+          void onCompleteTaskRef.current(task.file, task.line, task.text).then(reload, error => {
+            console.error("Failed to tick off a checkbox", error);
+            reload();
+          });
+        });
+        row.append(tick);
+
         const open = document.createElement("button");
         open.type = "button";
         open.className = "todo-block-item";
@@ -527,11 +568,9 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
         where.className = "todo-block-where";
         where.textContent = task.file.split("/").pop() ?? task.file;
         open.append(text, where);
-        // It opens the note; it doesn't tick the box. A file open in the other
-        // pane is an uncontrolled Crepe instance holding its own copy of the
-        // document (see the invariant at the top of panes.ts), and a write
-        // underneath it would be overwritten by its next save. So this takes
-        // you to where the checkbox is and lets the editor that owns it do it.
+        // The rest of the row still opens the note: ticking is one thing you
+        // might want from a list of what's left, and reading the paragraph
+        // under the checkbox is the other.
         editorButton(open, () => onOpenFileRef.current(task.file));
         row.append(open);
         list.append(row);
@@ -591,7 +630,7 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
         const mine = ++generation;
         void findTasksRef.current(args).then(
           summary => {
-            if (mine === generation) body.replaceChildren(renderTasks(summary));
+            if (mine === generation) body.replaceChildren(renderTasks(summary, load));
           },
           err => {
             console.error("Failed to list unfinished checkboxes", err);
@@ -1000,7 +1039,7 @@ export function Editor({
   onChange,
   onAssetAdded,
   findTasks,
-  onOpenFile,
+  onOpenFile, onCompleteTask,
 }: EditorProps) {
   if (!file) {
     return (
@@ -1047,6 +1086,7 @@ export function Editor({
           onAssetAdded={onAssetAdded}
           findTasks={findTasks}
           onOpenFile={onOpenFile}
+          onCompleteTask={onCompleteTask}
         />
       )}
     </div>

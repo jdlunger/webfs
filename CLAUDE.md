@@ -1155,18 +1155,46 @@ which draws the unfinished ones from the whole drive wherever it is written.
   looking at it. A node's own `content` wins where it has been loaded, and the
   store is read only for files this tab has never opened. That is why
   `findTasks` lives in `App.tsx` and is passed in: the tree is App's.
-- **A row opens the note; it doesn't tick the box.** Ticking would mean writing
-  a file that may be open in the other pane — an uncontrolled Crepe instance
-  holding its own copy of the document, whose next save would put the old text
-  straight back (see the invariant at the top of `panes.ts`). So the block
-  takes you to where the checkbox is and lets the editor that owns it do the
-  work. Worth knowing before anyone "just adds a checkbox to each row".
+- **A row can be ticked off, and the two halves of it do different things.**
+  The checkbox writes to whichever file holds the task; the rest of the row
+  still opens the note. Ticking a file that may be open in the other pane is
+  the whole difficulty — an uncontrolled Crepe instance holds its own copy of
+  that document and its next save would put the old text straight back (the
+  invariant at the top of `panes.ts`) — so the change goes out exactly the way
+  a sync's changes do: into the record, into the write queue, and a
+  `bumpExternalEdit` that remounts the editor if that note is on screen. It
+  costs the undo history of the note being ticked, which is the price of not
+  reaching into another pane's editor and hoping.
+- **`setTaskChecked` is a compare-and-swap, not an edit.** The block hands
+  back the line *and* the text it listed, and the file has to still say
+  exactly that or nothing happens. A list can be seconds old — someone typed
+  in that note, a sync pulled, another tab wrote — and a line number from a
+  stale one is precisely how you tick the wrong box. Refusing costs a refresh;
+  getting it wrong costs trust in every row in the block. The line is edited
+  rather than rebuilt, so the indentation, the bullet, the spacing and
+  anything trailing survive untouched.
+- **A tick updates `fsRef` as well as the state.** Not belt and braces: the
+  block reloads the moment the write resolves and reads that ref, which React
+  would only reassign on the next render — so without it the list comes back
+  still showing the row that was just ticked, which is the one thing the
+  reload exists to prevent.
+- **The block reloads rather than striking the row out.** What you look at
+  after a tick is what the drive says, including when the tick was *refused*.
+  A row that lied about being ticked would be worse than one that reappears.
+  Unticking is done in the note; the block lists what's unfinished, so a
+  ticked row has left it.
 - **A block hears about its own note and nothing else.** Rescanning the drive
   on every keystroke would be absurd, so the trigger is the *answer* changing:
   one pass over the document names the unfinished checkboxes in it, and typing
   in a paragraph leaves that alone. A box ticked in another file, or another
   tab, is what ↻ is for. The alternative is a subscription to the whole drive
   for a block that might be listing four things.
+- **A blank checkbox is not a task anyone can do.** `isBlankTask` drops rows
+  whose text is empty, `<br />`, or `&nbsp;` — spacers, and what an empty line
+  inside a list looks like once an editor has been near it. A real block had
+  `<br />` as a row of its own. Only whitespace and markup that *is*
+  whitespace goes: stripping tags in general would turn `<b>ship it</b>` into
+  a blank, which is the same mistake pointing the other way and a worse one.
 - **A checkbox inside a code fence is an example of one, not one.**
   `openTasksIn` blanks fenced blocks before it looks, keeping the line count so
   the numbers still point at the right line — without it a `todo` block would
@@ -1188,6 +1216,10 @@ which draws the unfinished ones from the whole drive wherever it is written.
   "advanced" group would put the whole slash menu at the mercy of an upstream
   rename; and the menu filters on the *label*, so "Unfinished checkboxes" is an
   item that typing `/todo` — the name of the thing it writes — cannot find.
+- **Crepe draws a task checkbox as an icon span, not an `<input>`** — its
+  state is a `checked`/`unchecked` class, which is what `bun run browser todo`
+  reads. The only real `<input type="checkbox">` inside the editor is the
+  block's own tick, so looking for one finds the wrong thing.
 - **Neither shows up in the plain-text view**, which is the source and shows
   the fence as the four characters it is. That is the same rule the rest of
   that view follows rather than an omission.
