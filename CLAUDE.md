@@ -949,10 +949,26 @@ you're looking at syncs — see Drives above.
   there's no way around it for a backend-less app: no server, so no session
   cookie to hide behind and no OAuth secret that could stay secret. The
   settings dialog says so.
-- **`branchUrl` points at `/tree/<branch>`** rather than the repo root, so a
-  link lands on what's actually being synced. The drive's name in the strip is
-  the switcher now rather than that link, because switching drives is what you
-  come to that corner to do; settings are the `⚙` beside it.
+- **`branchUrl` points at `/tree/<branch>`** rather than the repo root, so the
+  link lands on what's actually being synced. It hangs off the **branch chip**
+  in the strip (`main ↗`), not the drive's name — the name became the switcher
+  when drives landed, because switching is what you come to that corner to do,
+  and the link went missing entirely for a while as a result. The chip is the
+  one place that costs nothing: the drive name is already clipped at every
+  width, so a fourth control in the strip would eat the only text saying which
+  drive you are in. It sits *beside* the switcher rather than inside it,
+  because a link nested in a button is neither valid nor clickable.
+- **That link is checked from the browser, not just from `branchUrl`.** The
+  function had unit tests the whole time it was being rendered nowhere, which
+  is the shape of failure a pure test can't see: `bun run browser sync`
+  asserts the strip really has an anchor with that href.
+- **Its touch target is an overlay, not padding** (`.drive-branch::after` in
+  the phone block). The chip is 36×17 of text where a finger needs 44px, and
+  padding it out would make the strip taller — the strip is pinned to the foot
+  of the drawer, so every pixel it grows is one the file tree loses. The
+  overlay reaches down over the status line, which is text rather than a
+  control, and stops at the chip's left edge so it can't swallow taps meant
+  for the switcher.
 - **The dialog links to a pre-filled token page** (`tokenSetupUrl` in
   `DrivePanel.tsx`). GitHub's fine-grained token form takes a template URL, so
   `contents=write` (which implies read; GitHub adds `metadata:read` itself),

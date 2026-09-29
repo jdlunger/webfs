@@ -106,8 +106,11 @@ and a file changed in both places is merged.
    [github.com/settings/tokens](https://github.com/settings/tokens) — a
    fine-grained token with **read and write access to _Contents_** on the one
    repository you want to sync (a classic token needs the `repo` scope).
-2. In the sidebar, click **Sync with GitHub…**, enter the repository as
-   `owner/name`, the branch, and the token.
+2. In the sidebar, click the drive name at the bottom, then **Add a drive…**,
+   and enter the repository as `owner/name`, the branch, and the token.
+
+Once it's set up, the branch name in that strip (`main ↗`) is a link to what's
+being synced on GitHub.
 
 Notes on how it behaves:
 

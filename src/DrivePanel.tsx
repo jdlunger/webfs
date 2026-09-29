@@ -56,14 +56,37 @@ export function DrivePanel({
         </div>
       )}
       <div className="drive-info">
-        <button className="drive-switch" title="Switch drive" onClick={() => setPicking(true)}>
-          <DriveIcon kind={drive === null ? "add" : drive.kind} />
-          <span className="drive-name">{drive === null ? "Add a drive…" : describeDrive(drive)}</span>
-          {drive?.kind === "github" ? <span className="drive-branch">{drive.branch}</span> : null}
-          <span className="drive-caret" aria-hidden="true">
-            ▾
-          </span>
-        </button>
+        <div className="drive-line">
+          <button className="drive-switch" title="Switch drive" onClick={() => setPicking(true)}>
+            <DriveIcon kind={drive === null ? "add" : drive.kind} />
+            <span className="drive-name">{drive === null ? "Add a drive…" : describeDrive(drive)}</span>
+            <span className="drive-caret" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+          {/*
+            The branch, and the way out to GitHub. It sits *beside* the
+            switcher rather than inside it because a link nested in a button
+            is neither valid nor clickable, and it is the only thing on this
+            line that costs no width: the drive's name is already clipped at
+            every width, so a fourth control in the strip would eat into the
+            one piece of text that says which drive you are in.
+
+            `branchUrl` points at /tree/<branch>, so it lands on what is
+            actually being synced rather than the repository's default branch.
+          */}
+          {drive?.kind === "github" ? (
+            <a
+              className="drive-branch"
+              href={branchUrl(drive)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${drive.owner}/${drive.repo} at ${drive.branch} on GitHub`}
+            >
+              {drive.branch} ↗
+            </a>
+          ) : null}
+        </div>
         {drive === null ? null : <DriveStatusLine drive={drive} status={sync.status} online={sync.online} />}
       </div>
       {drive === null ? null : (

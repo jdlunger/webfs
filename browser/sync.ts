@@ -25,6 +25,18 @@ export default async function run(browser: Browser): Promise<number> {
   const page = await openApp(context);
   await waitUntil("the first sync", async () => !!(await statusText(page))?.match(/pulled|pushed|Up to date/i));
 
+  // The way out to the repository. `branchUrl` has always been unit-tested,
+  // and that is exactly why this is here: the strip stopped calling it when
+  // the drive switcher took the name, and a pure test of a function nothing
+  // renders goes on passing indefinitely.
+  const branchLink = page.locator(".drive-bar a.drive-branch");
+  checks.ok(
+    "the strip links out to the branch being synced",
+    (await branchLink.getAttribute("href")) === "https://github.com/me/notes/tree/main",
+    String(await branchLink.getAttribute("href")),
+  );
+  checks.ok("and opens it in a new tab rather than replacing the app", (await branchLink.getAttribute("target")) === "_blank");
+
   const local = await opfsFiles(page);
   checks.ok(
     "the first sync pulls the repo's file into OPFS",

@@ -1294,11 +1294,27 @@ body.resizing-sidebar {
   color: #fff;
 }
 
+/* The switcher and the branch link share a line, and only the switcher may
+   shrink: the branch is a handful of characters where the drive name is a
+   whole repository path. */
+.drive-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
 .drive-branch {
   font-weight: 400;
   font-size: 11px;
   color: #777;
   flex-shrink: 0;
+  text-decoration: none;
+}
+
+.drive-branch:hover {
+  color: #6aa9e9;
+  text-decoration: underline;
 }
 
 .sync-status {
@@ -1609,6 +1625,23 @@ body.resizing-sidebar {
 
   .drive-switch {
     font-size: 14px;
+  }
+
+  /* A finger's worth of hit area without a finger's worth of layout. The
+     branch link is 36x17 of text and 44px is what a touch target has to be,
+     but padding it out would make the strip taller — and the strip is pinned
+     to the foot of the drawer, so every pixel it grows is one the file tree
+     loses. The overlay reaches down over the status line, which is text
+     rather than a control, and stops at the link's left edge so it can't
+     swallow taps meant for the switcher beside it. */
+  .drive-branch {
+    position: relative;
+  }
+
+  .drive-branch::after {
+    content: "";
+    position: absolute;
+    inset: -14px -8px -14px 0;
   }
 
   .sync-status {
