@@ -1644,3 +1644,110 @@ body.resizing-sidebar {
     font-size: 15px;
   }
 }
+
+/* The crash screen (crash.ts). Two shapes of the same panel: full screen when
+   nothing else rendered, and a bar along the bottom when the app is up and an
+   error arrived behind it. Deliberately independent of everything above —
+   it's on screen precisely when the rest of the app isn't. */
+.crash {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  background: #1b1b1b;
+  color: #eee;
+}
+
+.crash-box {
+  width: 100%;
+  max-width: 720px;
+}
+
+.crash-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.crash-lede {
+  margin: 0 0 16px;
+  color: #aaa;
+  font-size: 14px;
+}
+
+.crash-report {
+  margin: 0;
+  padding: 12px;
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: #121212;
+  color: #ddd;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* The copy button can be refused (Safari, outside a gesture it likes), so
+     the text itself has to be selectable and wrap rather than run off. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.crash-button {
+  /* 44px, like every other touch target here: this screen is reached on a
+     phone more often than anywhere else. */
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #eee;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.crash-button:hover {
+  background: #343434;
+}
+
+/* The app is on screen and working; the error gets a bar, not the screen. */
+.crash-minimized {
+  inset: auto 0 0 0;
+  padding: 0;
+  background: none;
+}
+
+.crash-minimized .crash-box {
+  display: none;
+}
+
+.crash-bar {
+  display: none;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: none;
+  border-top: 1px solid #6b3a3a;
+  background: #3a2020;
+  color: #f2d5d5;
+  font-size: 13px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.crash-minimized .crash-bar {
+  display: block;
+}

@@ -20,6 +20,7 @@ import pdf from "./pdf";
 import sidebar from "./sidebar";
 import todo from "./todo";
 import indent from "./indent";
+import crash from "./crash";
 
 const suites = {
   sync,
@@ -36,6 +37,7 @@ const suites = {
   names,
   share,
   pdf,
+  crash,
 } as const;
 
 const requested = process.argv.slice(2);

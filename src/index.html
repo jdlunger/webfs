@@ -19,6 +19,78 @@
          *every* <link href> as a module to bundle (not just stylesheets),
          and these live in public/ as plain static files, not part of the
          module graph. -->
+
+    <!-- Runs before the bundle, and is the only thing that can catch a
+         failure *in* it: a module that throws while evaluating, or a chunk
+         the service worker cached that no longer loads, happens before
+         crash.ts has been imported and so before it can install anything.
+         Errors caught here are handed over when crash.ts loads and drains
+         `__webfsBoot`; if it never loads — which is exactly the stale-cache
+         case this exists for — the watchdog below puts the same information
+         on the page by itself, unstyled and dependency-free, because a blank
+         screen is the one outcome that leaves the user nothing at all. Its
+         six seconds are deliberately shorter than the watchdog in crash.ts:
+         whichever of the two is going to load has loaded by then, and once
+         crash.ts has, it claims the errors and this one stands down.
+         Inline rather than a file: a separate <script src> in public/ isn't
+         in the module graph Bun's HTML bundler resolves, and one more
+         request is one more thing that can 404 from a stale cache. -->
+    <script>
+      (function () {
+        var boot = (window.__webfsBoot = { errors: [], claimed: false, panel: null });
+        window.addEventListener("error", function (event) {
+          if (!("message" in event)) return; // a failed <img>/<script> load, not a throw
+          var at = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : null;
+          boot.errors.push({ source: "error", error: event.error, message: String(event.message), where: at });
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          boot.errors.push({ source: "promise", error: event.reason, message: String(event.reason) });
+        });
+        // Puts what it has on the page. Called at six seconds if something
+        // has already thrown — by then, whichever of the two handlers is
+        // going to load has loaded — and at thirty if not: a bundle still
+        // downloading on a slow phone hasn't failed, and a panel over an app
+        // that then mounts underneath it is its own blank screen.
+        function fallback() {
+          var root = document.getElementById("root");
+          if (boot.claimed || boot.panel || (root && root.childElementCount > 0)) return;
+          var lines = boot.errors.map(function (item) {
+            return (item.message || "") + (item.where ? "\n  at " + item.where : "");
+          });
+          var text =
+            "webfs couldn't start.\n\n" +
+            (lines.length > 0 ? lines.join("\n\n") : "The app didn't load, and nothing threw — a cached build that no longer works is the usual cause.") +
+            "\n\n" + location.href + "\n" + navigator.userAgent;
+          var pre = document.createElement("pre");
+          pre.className = "crash-report";
+          pre.textContent = text;
+          var panel = document.createElement("div");
+          panel.className = "crash";
+          // Styled inline as well as by class: if the bundle is what failed,
+          // its stylesheet may be missing too, and this is the one screen
+          // that has to be legible without it.
+          panel.setAttribute(
+            "style",
+            "position:fixed;inset:0;z-index:2147483647;overflow:auto;padding:24px;" +
+              "background:#1b1b1b;color:#eee;font:14px/1.5 ui-monospace,Menlo,monospace;",
+          );
+          var box = document.createElement("div");
+          box.className = "crash-box";
+          var title = document.createElement("h1");
+          title.className = "crash-title";
+          title.textContent = "webfs couldn't start";
+          box.appendChild(title);
+          box.appendChild(pre);
+          panel.appendChild(box);
+          (document.body || document.documentElement).appendChild(panel);
+          boot.panel = panel;
+        }
+        setTimeout(function () {
+          if (boot.errors.length > 0) fallback();
+        }, 6000);
+        setTimeout(fallback, 30000);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

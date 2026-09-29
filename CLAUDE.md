@@ -1384,6 +1384,77 @@ a dozen separate conventions, and the next one is always a version away.
   finer would need source positions that don't survive the document being
   edited.
 
+## When nothing renders (`crash.ts`)
+
+A blank page is the one failure this app could not report. Everything is
+client-side, so a bundle that throws while evaluating, a chunk the service
+worker cached that no longer loads, or a first render that blows up leaves the
+document exactly as `index.html` left it: an empty `<div id="root">`, no
+console anyone can reach, nothing to do about it. That happened once in the
+installed PWA on a phone, offline, and by the time it could be asked about it
+no longer reproduced. So the failure now says so on the page.
+
+`crash.ts` (the panel and the handlers), the `CrashBoundary` in
+`frontend.tsx`, the inline script in `index.html`, `.crash*` in `index.css`.
+`crash.test.ts` drives it against a fake DOM; `bun run browser crash` drives
+it against a real one.
+
+- **Four ways in, because a blank page has four causes.** `window.onerror`
+  covers a module that threw while evaluating; `unhandledrejection` covers a
+  promise nobody awaited; React's error boundary covers a render that throws,
+  which `onerror` never sees — React catches it itself and, with no boundary,
+  unmounts the whole tree; and a watchdog covers the case with no error at
+  all, a load that simply never finishes, which is what a hung `await` in
+  startup looks like from the outside.
+- **The panel is plain DOM, deliberately not React.** It runs in the situation
+  where React is the thing that broke. For the same reason it can't be allowed
+  to throw on its own account — a crash screen that crashes leaves exactly the
+  blank page it was written to replace, so `describeError` takes anything
+  (strings, `undefined`, a rejected fetch's object, a circular one) and
+  rendering is wrapped.
+- **The boundary has to stop rendering its children, not merely notice.**
+  Returning them again from a boundary that caught them throws again, and
+  React retries: the state flag is what ends it.
+- **It takes the screen only when there is nothing to take it from.** Before
+  the first render there's nothing to lose and everything to explain. After
+  it, the app is on screen and working as far as anyone can tell, and covering
+  it with a stack trace because a sync call rejected would be its own bug — so
+  a mounted app gets a bar along the bottom that opens the same report, and
+  can be dismissed. A *render* failure is fatal whatever is still on screen,
+  since what's there is a tree React has already given up on.
+- **`index.html` carries a copy of the handler, inline, before the bundle.**
+  This is the only part that can catch a failure *in* the bundle: `crash.ts`
+  is imported by the bundle, so a module that throws while evaluating — or a
+  chunk that 404s from a stale cache — happens before it exists. The inline
+  script records into `window.__webfsBoot`; `crash.ts` drains that when it
+  loads and claims it. If it never loads, the inline script draws the panel
+  itself, unstyled and dependency-free, with its colours in a `style`
+  attribute — the stylesheet is part of the same build that just failed.
+- **Its two timers are about telling a broken build from a slow one.** With an
+  error already recorded it draws at six seconds: whichever handler was going
+  to load has loaded by then. With nothing recorded it waits thirty, because a
+  bundle still downloading on a phone hasn't failed, and a panel left over an
+  app that then mounts underneath is its own blank screen. `crash.ts` removes
+  that panel when it claims the errors, for the case where it was merely slow.
+- **The report is the artifact, not the panel.** Someone holding a phone can't
+  read a stack off a screen into a bug report, so everything is in one
+  copyable block, leading with the build (`versionLabel`) and the user agent —
+  the two questions any answer starts with — and listing *every* error, since
+  the second is often the informative one. The block is selectable and wraps,
+  because Safari refuses the clipboard outside a gesture it likes and an
+  installed PWA is exactly where that bites.
+- **"Clear cache and reload" is the point of the whole thing.** The failure
+  this was written for is a stale cached shell, which a reload can't shift —
+  the worker answers it from the cache it's stale in, ctrl-shift-R included
+  (see the PWA notes). On a phone there is no other way out. It unregisters
+  the worker and empties the Cache Storage and nothing else: OPFS and
+  localStorage are the user's documents and settings, and are untouched.
+- **The browser suite breaks the app on purpose** — it routes the bundle to a
+  script that throws, and separately holds the bundle back so a rejection
+  lands in the window between the inline handler and `crash.ts`. It asserts on
+  visibility and computed style rather than on the element being in the
+  document: a panel that is present but invisible is the blank page again.
+
 ## Browser suites (`bun run browser`)
 
 `browser/` drives the real app in Chromium, because the half of webfs that
@@ -1394,7 +1465,7 @@ empty repo's 409, a stale service-worker shell, a runaway read loop.
 
 - **Running them:** `bun run browser`, or `bun run browser sync` for one
   (`sync`, `empty-repo`, `images`, `panes`, `drives`, `sidebar`, `indent`,
-  `pdf`, `wikilinks`, `vault`, `view`, `todo`, `names`, `share`). The dev server is started by the
+  `pdf`, `wikilinks`, `vault`, `view`, `todo`, `names`, `share`, `crash`). The dev server is started by the
   runner, so nothing needs to be up first. Chromium comes from
   `bunx playwright install chromium`, or point `WEBFS_CHROMIUM` at a binary
   that already exists. **Run them under a UTF-8 locale** — under

@@ -5,15 +5,49 @@
  * It is included in `src/index.html`.
  */
 
-import { StrictMode } from "react";
+import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { appUrl } from "./basePath";
+import { installCrashHandlers, reportCrash } from "./crash";
+
+// First, before anything else here can throw: from this point on a failure
+// anywhere — a module that threw while evaluating, a promise nobody awaited,
+// a render that blew up, or a start that simply never finished — puts itself
+// on the page instead of leaving the blank screen it would otherwise leave.
+// See crash.ts.
+installCrashHandlers();
+
+/**
+ * Catches a render that throws, which `window.onerror` does not see: React
+ * handles the exception itself and, with no boundary above it, unmounts the
+ * whole tree — a blank page with nothing logged anywhere the user can reach.
+ *
+ * It renders nothing of its own; the panel crash.ts puts on the page is the
+ * screen. Keeping one renderer means the three ways in all look alike, and
+ * the one that runs when React is the broken thing isn't itself React.
+ */
+class CrashBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  override state = { failed: false };
+  // Rendering the same children again would throw again, and React would
+  // retry: the boundary has to stop rendering them, not merely notice.
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  override componentDidCatch(error: unknown) {
+    reportCrash("render", error);
+  }
+  override render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 const elem = document.getElementById("root")!;
 const app = (
   <StrictMode>
-    <App />
+    <CrashBoundary>
+      <App />
+    </CrashBoundary>
   </StrictMode>
 );
 
