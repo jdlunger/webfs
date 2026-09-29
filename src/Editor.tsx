@@ -264,32 +264,77 @@ function inListItem($pos: ResolvedPos): boolean {
  * reports, and it has to measure the screen position of a specific character
  * — neither is something to route through a React re-render for.
  */
+const indentToolbarKey = new PluginKey<DecorationSet>("webfsIndentToolbar");
+
 function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
+  // Captured when the widget's `toDOM` runs, so `view()` below can reposition
+  // the same element `props.decorations` put in the document.
+  let root: HTMLElement | null = null;
+
+  const toDOM = (): HTMLElement => {
+    root = document.createElement("div");
+    root.className = "indent-toolbar";
+    root.style.display = "none";
+    // ProseMirror-owned, not manually appended: a `Decoration.widget` is a
+    // real, tracked part of the document's DOM, which is what keeps it from
+    // being pruned as a foreign child the next time the document changes
+    // structurally — typing "- " itself converts a paragraph into a list,
+    // and a manually appended sibling didn't survive that. This is the exact
+    // mechanism the checkbox-sort handle above already uses, for the same
+    // reason.
+    //
+    // It's also a `contentEditable="false"` island *inside* the ProseMirror
+    // DOM rather than appended to document.body, which is where this first
+    // lived. On iOS Safari, tapping anything outside the DOM subtree of the
+    // currently focused contenteditable blurs it — dismissing the keyboard
+    // and resetting the page's scroll position — regardless of
+    // `preventDefault()` on the tap; that scope is about DOM containment,
+    // not which JS handler ran.
+    root.contentEditable = "false";
+
+    const button = (glyph: string, label: string, key: typeof sinkListItemCommand.key) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "indent-toolbar-button";
+      el.textContent = glyph;
+      el.title = label;
+      el.setAttribute("aria-label", `${label} list item`);
+      // Wired through `commandsCtx` directly rather than the command's own
+      // `.run()`: that method is a module-level object every Crepe instance
+      // shares, overwritten by whichever one called `.create()` most
+      // recently. `ctx` here is the one this plugin was built with, so this
+      // reaches the editor the button is floating over and no other.
+      editorButton(el, () => ctx.get(commandsCtx).call(key));
+      return el;
+    };
+    root.append(button("⇤", "Outdent", liftListItemCommand.key), button("⇥", "Indent", sinkListItemCommand.key));
+    return root;
+  };
+
   return new Plugin({
+    key: indentToolbarKey,
+    state: {
+      // Anchored at the very start of the document rather than at the
+      // cursor: position 0 is always valid, so this decoration — and the DOM
+      // node it owns — never has a reason to move or be rebuilt. Where it
+      // actually floats is set from `view()` below, in plain CSS, entirely
+      // independent of where the decoration is anchored in the document.
+      init: (_config, state) =>
+        DecorationSet.create(state.doc, [
+          Decoration.widget(0, toDOM, { key: "indent-toolbar", side: -1, ignoreSelection: true }),
+        ]),
+      // The same DecorationSet object every time, deliberately: returning an
+      // equal-but-new one risks ProseMirror deciding the widget changed and
+      // re-running `toDOM`, which would tear down the very button someone
+      // might be about to tap.
+      apply: (_tr, current) => current,
+    },
+    props: {
+      decorations: state => indentToolbarKey.getState(state),
+    },
     view() {
-      const root = document.createElement("div");
-      root.className = "indent-toolbar";
-      root.style.display = "none";
-
-      const button = (glyph: string, label: string, key: typeof sinkListItemCommand.key) => {
-        const el = document.createElement("button");
-        el.type = "button";
-        el.className = "indent-toolbar-button";
-        el.textContent = glyph;
-        el.title = label;
-        el.setAttribute("aria-label", `${label} list item`);
-        // Wired through `commandsCtx` directly rather than the command's own
-        // `.run()`: that method is a module-level object every Crepe instance
-        // shares, overwritten by whichever one called `.create()` most
-        // recently. `ctx` here is the one this plugin was built with, so this
-        // reaches the editor the button is floating over and no other.
-        editorButton(el, () => ctx.get(commandsCtx).call(key));
-        return el;
-      };
-      root.append(button("⇤", "Outdent", liftListItemCommand.key), button("⇥", "Indent", sinkListItemCommand.key));
-      document.body.append(root);
-
       const reposition = (view: ProseView) => {
+        if (!root) return;
         // Shown only where there's no Tab key to press, and only with the
         // cursor actually in a list item — otherwise there's nothing to
         // sink or lift, and a floating button over ordinary text would be a
@@ -311,10 +356,10 @@ function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
         }
       };
 
-      return {
-        update: reposition,
-        destroy: () => root.remove(),
-      };
+      return { update: reposition };
+      // No destroy: this DOM node belongs to the decoration, and ProseMirror
+      // tears that down itself along with the rest of the document's DOM
+      // when the editor is destroyed.
     },
   });
 }

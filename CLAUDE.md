@@ -90,8 +90,36 @@ without this there was no way to indent a list on a phone, full stop.
   not just the document edits `markdownUpdated` reports — and it has to
   measure the screen position of a specific character. Routing that through a
   React re-render on every keystroke is exactly the kind of churn `sortHandle`
-  (Checkboxes, below) already avoids for the same reason; this follows the
-  same shape, `view()` returning `{ update, destroy }` rather than a component.
+  (Checkboxes, below) already avoids for the same reason.
+- **The button lives in a `Decoration.widget`, anchored at position 0 — not
+  appended to the DOM by hand.** The first version did that directly, in the
+  plugin's `view()`, and it broke the moment a structural edit landed nearby:
+  ProseMirror reconciles `view.dom`'s children against what the document and
+  its decorations actually call for, and a foreign child it didn't create —
+  never mind that it was `contentEditable="false"` — isn't among them, so it
+  got pruned the first time "- " turned a paragraph into a list. Going through
+  `Decoration.widget` instead means ProseMirror is the one that put it there,
+  which is what protects it: the widget is anchored at position 0, always
+  valid, so it's never recreated at all — `apply` returns the very same
+  `DecorationSet` object on every transaction, on purpose, since a new-but-
+  equal one risks reading as "the widget changed" and getting rebuilt out from
+  under a tap in progress. Anchoring at 0 also means the decoration's position
+  has nothing to do with *where it floats*: that's still plain inline style,
+  set from the plugin's `view()` exactly as before, entirely independent of
+  the anchor. `sortHandle` below is the same mechanism for the same reason,
+  just anchored at a list's own position instead of a fixed one.
+- **It has to live inside the ProseMirror DOM at all — not `document.body`,
+  which is where this first lived too.** On real iOS Safari (not caught by
+  the browser suite, which runs Chromium; a person testing on an actual phone
+  found this), tapping the button once worked and then jumped the page to the
+  top of the viewport. The cause is a WebKit-specific rule: tapping anything
+  outside the DOM subtree of the currently focused contenteditable blurs it —
+  dismissing the keyboard and resetting scroll — and that is decided by DOM
+  containment, not by which JS handler ran or whether it called
+  `preventDefault()`. The checkbox-sort handle and the `todo` block's controls
+  never had this problem because they were never anywhere else: both are
+  widgets/node views too, which is what makes their DOM a genuine descendant
+  of the contenteditable region rather than a sibling of it.
 - **The buttons call the same commands the keys do**, not a re-implementation
   of them: `sinkListItemCommand`/`liftListItemCommand` from
   `@milkdown/kit/preset/commonmark` are exactly what Milkdown's own `Tab`
@@ -120,12 +148,16 @@ without this there was no way to indent a list on a phone, full stop.
   visibly obvious; it just leaves the toolbar a couple of pixels off wherever
   the border was left out of the arithmetic, caught by the browser suite
   comparing its bounding box to the line's rather than by eye.
-- **Appended straight to `document.body`**, like the context menu, and for
-  the same reason: `position: fixed` coordinates from `coordsAtPos` are
-  viewport-relative, and a floating element has no business inside the
-  pane's own scrolling, flexed layout. `z-index: 45` — above the mobile
-  topbar and the sidebar drawer, below the context menu and the drive
-  picker's scrim, neither of which is ever open while this is.
+- **`position: fixed`, not `absolute`, even though the element lives inside
+  the scrolling, flexed `.milkdown-root`.** `coordsAtPos` coordinates are
+  viewport-relative, and `fixed` is what makes that math land regardless of
+  where in the document tree the node happens to sit or how far its ancestors
+  have scrolled — nothing between it and `<html>` sets a `transform`, which is
+  the one thing that would make `fixed` resolve against something other than
+  the real viewport (the context menu's own comment about the mobile sidebar
+  drawer is exactly that gotcha, on a different element). `z-index: 45` —
+  above the mobile topbar and the sidebar drawer, below the context menu and
+  the drive picker's scrim, neither of which is ever open while this is.
 - **Hidden whenever the editor doesn't have focus**
   (`view.hasFocus()`), not just when the cursor leaves a list item. Tapping
   one of the two buttons never triggers this, because the same event-swallowing
