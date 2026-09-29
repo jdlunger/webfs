@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
-import { editorViewCtx, editorViewOptionsCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
+import {
+  commandsCtx,
+  editorViewCtx,
+  editorViewOptionsCtx,
+  parserCtx,
+  remarkStringifyOptionsCtx,
+  serializerCtx,
+} from "@milkdown/kit/core";
 import { liftListItemCommand, sinkListItemCommand } from "@milkdown/kit/preset/commonmark";
-import { $node, $prose, $remark, callCommand, type $Node } from "@milkdown/kit/utils";
+import { $node, $prose, $remark, type $Node } from "@milkdown/kit/utils";
 import type { Ctx } from "@milkdown/kit/ctx";
-import { Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
+import { Fragment, type Node as ProseNode, type ResolvedPos } from "@milkdown/kit/prose/model";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView as ProseView } from "@milkdown/kit/prose/view";
 import { segmentsOf } from "./fs";
@@ -224,6 +231,94 @@ const sortTaskLists = () =>
     },
   });
 
+// --- indenting a list item on a phone ----------------------------------------
+
+/**
+ * Fixed to match `.indent-toolbar` in index.css: two 44px buttons, 6px gaps
+ * and padding, and the 1px border on each side — easy to leave out and then
+ * be a couple of pixels off both edges of the screen.
+ */
+const INDENT_TOOLBAR_WIDTH = 108;
+const INDENT_TOOLBAR_HEIGHT = 58;
+const INDENT_TOOLBAR_GAP = 6;
+/** Kept off the very edge of the screen, and off the very top of it. */
+const INDENT_TOOLBAR_MARGIN = 8;
+
+const isListItem = (node: ProseNode) => node.type.name === "list_item";
+
+/** Whether a resolved position is anywhere inside a list item. */
+function inListItem($pos: ResolvedPos): boolean {
+  for (let depth = $pos.depth; depth > 0; depth--) {
+    if (isListItem($pos.node(depth))) return true;
+  }
+  return false;
+}
+
+/**
+ * The floating buttons that sink/lift the list item the cursor is in —
+ * Milkdown's own Tab/Shift-Tab, reachable by touch. See "Indenting on a
+ * phone" in CLAUDE.md for why this exists and how it's positioned.
+ *
+ * Plain DOM rather than React, like the sort handle above: it has to react to
+ * every selection change, not just the document changes `markdownUpdated`
+ * reports, and it has to measure the screen position of a specific character
+ * — neither is something to route through a React re-render for.
+ */
+function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
+  return new Plugin({
+    view() {
+      const root = document.createElement("div");
+      root.className = "indent-toolbar";
+      root.style.display = "none";
+
+      const button = (glyph: string, label: string, key: typeof sinkListItemCommand.key) => {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "indent-toolbar-button";
+        el.textContent = glyph;
+        el.title = label;
+        el.setAttribute("aria-label", `${label} list item`);
+        // Wired through `commandsCtx` directly rather than the command's own
+        // `.run()`: that method is a module-level object every Crepe instance
+        // shares, overwritten by whichever one called `.create()` most
+        // recently. `ctx` here is the one this plugin was built with, so this
+        // reaches the editor the button is floating over and no other.
+        editorButton(el, () => ctx.get(commandsCtx).call(key));
+        return el;
+      };
+      root.append(button("⇤", "Outdent", liftListItemCommand.key), button("⇥", "Indent", sinkListItemCommand.key));
+      document.body.append(root);
+
+      const reposition = (view: ProseView) => {
+        // Shown only where there's no Tab key to press, and only with the
+        // cursor actually in a list item — otherwise there's nothing to
+        // sink or lift, and a floating button over ordinary text would be a
+        // mystery.
+        if (!wideRef.current && view.hasFocus() && inListItem(view.state.selection.$from)) {
+          const coords = view.coordsAtPos(view.state.selection.$from.pos);
+          root.style.display = "flex";
+          const above = coords.top - INDENT_TOOLBAR_HEIGHT - INDENT_TOOLBAR_GAP;
+          // Floats above the line the cursor is on; below it instead when
+          // that would push it off the top of the screen, which is exactly
+          // the note whose very first line is a checklist.
+          root.style.top = `${above < INDENT_TOOLBAR_MARGIN ? coords.bottom + INDENT_TOOLBAR_GAP : above}px`;
+          root.style.left = `${Math.min(
+            Math.max(INDENT_TOOLBAR_MARGIN, coords.left),
+            window.innerWidth - INDENT_TOOLBAR_WIDTH - INDENT_TOOLBAR_MARGIN,
+          )}px`;
+        } else {
+          root.style.display = "none";
+        }
+      };
+
+      return {
+        update: reposition,
+        destroy: () => root.remove(),
+      };
+    },
+  });
+}
+
 /**
  * Puts a command fence where the slash menu was typed.
  *
@@ -300,18 +395,19 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
   const onCompleteTaskRef = useRef(onCompleteTask);
   onCompleteTaskRef.current = onCompleteTask;
   /**
-   * Set once `crepe.create()` resolves, cleared on unmount — so a tap on the
-   * indent buttons below can't reach a half-built or already-torn-down
-   * editor. Not state: nothing here needs a re-render, only a place for the
-   * click handlers to find the live instance.
-   */
-  const crepeRef = useRef<Crepe | null>(null);
-  /**
    * Sink/lift-list-item is bound to Tab/Shift-Tab, which is how a keyboard
    * reaches it — and which iOS's on-screen keyboard has no key for at all.
-   * Shown only where there's no Tab key to press.
+   * The floating toolbar below is shown only where there's no Tab key to
+   * press. A ref, because `listIndentToolbar` is a ProseMirror plugin built
+   * once when the editor mounts (see the effect's dependency list below) —
+   * it has to read the *current* value on every keystroke and selection
+   * change, not the one in scope when the plugin was created, or resizing
+   * across the breakpoint without remounting the editor would leave it
+   * showing (or hiding) the wrong way until the next file was opened.
    */
   const wide = useMediaQuery(WIDE_SCREEN);
+  const wideRef = useRef(wide);
+  wideRef.current = wide;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -849,7 +945,8 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
       .use(wikiLinkNode)
       .use(fenceRemark)
       .use(fenceNode)
-      .use($prose(() => sortTaskLists()));
+      .use($prose(() => sortTaskLists()))
+      .use($prose(ctx => listIndentToolbar(ctx, wideRef)));
     crepe.on(listener => {
       listener.markdownUpdated((_ctx, markdown) => {
         // What the file itself says, in the serializer's dialect. Worked out
@@ -892,11 +989,10 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
       });
     });
     const ready = crepe.create();
-    ready.then(() => (crepeRef.current = crepe)).catch(err => console.error("Failed to create Milkdown editor", err));
+    ready.catch(err => console.error("Failed to create Milkdown editor", err));
 
     return () => {
       clearTimeout(refreshTimer);
-      crepeRef.current = null;
       ready.then(() => crepe.destroy()).catch(() => {});
       for (const url of objectUrls) URL.revokeObjectURL(url);
     };
@@ -909,59 +1005,10 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, store]);
 
-  /**
-   * Runs a list-item command against *this* editor, not whichever one last
-   * called `.create()` — `sinkListItemCommand`/`liftListItemCommand` are
-   * module-level singletons shared by every Crepe instance (a split pane
-   * mounts two), so calling `.run()` on them directly would reach through to
-   * whichever one registered it last. `editor.action` is scoped to the
-   * instance it's called on, which is what keeps a tap in one pane from
-   * indenting a list in the other.
-   */
-  const runListCommand = (key: typeof sinkListItemCommand.key) => {
-    crepeRef.current?.editor.action(callCommand(key));
-  };
-
-  return (
-    <>
-      {!wide && (
-        // The one thing here with no touch equivalent otherwise: Tab/Shift-Tab
-        // indent a list item, and iOS's on-screen keyboard has no Tab key to
-        // press. `onPointerDown` with `preventDefault`, not `onClick` — a
-        // button is outside the ProseMirror DOM, so an ordinary click first
-        // steals focus (and with it the selection the command acts on),
-        // which is the same reason Crepe's own floating toolbar binds its
-        // buttons this way rather than to a click.
-        <div className="indent-toolbar">
-          <button
-            type="button"
-            className="indent-toolbar-button"
-            title="Outdent"
-            aria-label="Outdent list item"
-            onPointerDown={e => {
-              e.preventDefault();
-              runListCommand(liftListItemCommand.key);
-            }}
-          >
-            ⇤
-          </button>
-          <button
-            type="button"
-            className="indent-toolbar-button"
-            title="Indent"
-            aria-label="Indent list item"
-            onPointerDown={e => {
-              e.preventDefault();
-              runListCommand(sinkListItemCommand.key);
-            }}
-          >
-            ⇥
-          </button>
-        </div>
-      )}
-      <div className="milkdown-root" ref={containerRef} />
-    </>
-  );
+  // The indent/outdent buttons are drawn by listIndentToolbar above, straight
+  // into document.body — there's nothing for this component's own JSX to
+  // render for them.
+  return <div className="milkdown-root" ref={containerRef} />;
 }
 
 /**

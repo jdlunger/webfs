@@ -278,14 +278,24 @@ body.resizing-sidebar {
    not here), so nothing below needs its own media query. Same family as the
    mobile topbar's buttons — 44px squares, because these are tapped, not
    clicked, and a phone is where the keyboard shortcut this replaces doesn't
-   reach at all. */
+   reach at all.
+
+   Appended straight to <body> by listIndentToolbar in Editor.tsx, like the
+   context menu below, and for the same reason: it has to sit above whatever
+   it's floating over rather than inside the pane's own layout. `top`/`left`
+   are written from there too, in step with the two dimensions here —
+   INDENT_TOOLBAR_WIDTH/HEIGHT in Editor.tsx have to match this exactly, since
+   positioning it above a line means knowing its height before painting it. */
 .indent-toolbar {
-  display: flex;
+  position: fixed;
+  display: none; /* flex, set from Editor.tsx once there's somewhere to point it */
   gap: 6px;
-  padding: 6px 8px;
-  border-bottom: 1px solid #2c2c2c;
-  background: #181818;
-  flex-shrink: 0;
+  padding: 6px;
+  background: #232323;
+  border: 1px solid #3a3a3a;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  z-index: 45;
 }
 
 .indent-toolbar-button {

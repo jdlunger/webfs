@@ -75,43 +75,75 @@ position and undo history, so never bump it for local typing.
 
 ## Indenting on a phone
 
-The two buttons at the top of a Milkdown pane on a narrow screen. All in
-`Editor.tsx`. Driven by `bun run browser indent`.
+A floating pair of buttons that appears above the line the cursor is on, only
+while that line is inside a list item. `listIndentToolbar` in `Editor.tsx`,
+`.indent-toolbar`/`.indent-toolbar-button` in `index.css`. Driven by
+`bun run browser indent`.
 
 Milkdown's own indent/outdent — sink and lift a list item — is bound only to
 `Tab` and `Shift-Tab` (a Milkdown keymap, not a browser default). A hardware
 keyboard sends those; iOS's on-screen keyboard has no Tab key at all, so
 without this there was no way to indent a list on a phone, full stop.
 
+- **A ProseMirror plugin with its own DOM, not React state.** It has to react
+  to every selection change — a tap that only moves the cursor, an arrow key,
+  not just the document edits `markdownUpdated` reports — and it has to
+  measure the screen position of a specific character. Routing that through a
+  React re-render on every keystroke is exactly the kind of churn `sortHandle`
+  (Checkboxes, below) already avoids for the same reason; this follows the
+  same shape, `view()` returning `{ update, destroy }` rather than a component.
 - **The buttons call the same commands the keys do**, not a re-implementation
   of them: `sinkListItemCommand`/`liftListItemCommand` from
   `@milkdown/kit/preset/commonmark` are exactly what Milkdown's own `Tab`
   keymap entry calls. A tap is the keystroke with a different trigger.
-- **`editor.action(callCommand(key))`, not the command's own `.run()`.**
+- **`ctx.get(commandsCtx).call(key)`, not the command's own `.run()`.**
   Milkdown's `$command` helper hangs `.run()` off the same module-level object
   every Crepe instance shares — a split pane mounts two — and each `.create()`
   overwrites it to point at *that* instance's `ctx`. Calling `.run()` directly
   would reach whichever pane's editor was built most recently, not the one the
-  button is drawn in. `editor.action` is scoped to the specific `Crepe`
-  instance it's called on, which is what keeps a tap in one pane from editing
-  the other's document. In practice this can't yet happen through the UI —
-  the toolbar and the split view are mutually exclusive, one narrow-screen and
-  the other wide — but the safe form was no harder to write than the unsafe
-  one, and remains correct if that ever changes.
-- **The command runs against `crepeRef`, a ref set once `crepe.create()`
-  resolves and cleared on unmount** — not the `crepe` the effect's closure
-  already has. A tap on a leftover instance mid-mount or mid-teardown would
-  otherwise try to act on an editor that isn't fully there.
-- **`onPointerDown`, not `onClick`, and `preventDefault` inside it.** A button
-  is outside the ProseMirror DOM, so an ordinary click first moves focus to
-  the button — taking the text selection the command is supposed to act on
-  with it — and only *then* fires. By the time `onClick` ran, there'd be
-  nothing to indent. This is the same reason Crepe's own floating selection
-  toolbar binds its buttons to `pointerdown` rather than `click`.
-- **Shown only where `WIDE_SCREEN` doesn't match** (`Editor.tsx`, not a CSS
-  media query): a screen with room for a keyboard shortcut doesn't need a
-  button for it, and there's no mounting cost to hiding this one in JS the
-  way there is for a second pane, so a plain conditional is enough.
+  button is drawn over. `listIndentToolbar(ctx, wideRef)` is handed the `ctx`
+  Milkdown resolved for *this* editor instance when the plugin was installed
+  (`$prose(ctx => listIndentToolbar(ctx, wideRef))`, the same shape
+  `insertFence` already uses), so the commands it calls are always this
+  editor's own.
+- **Position comes from `view.coordsAtPos`, above the exact character the
+  cursor is on** — not the list item's own start, which can be several lines
+  above if the item wraps or holds more than one paragraph. "The line" means
+  the visual line the caret is on, and that's the one call that answers it.
+  Flips to *below* the line instead when there's no room above (the toolbar's
+  own height plus a small margin), which is the ordinary case for a note whose
+  very first line is a checklist — this app's own seeded `todo.md` among them.
+- **`INDENT_TOOLBAR_WIDTH`/`HEIGHT` are hardcoded to match the CSS exactly**,
+  border included — measuring the DOM instead (`getBoundingClientRect`) would
+  force a synchronous layout on every keystroke and cursor move, which is
+  what `update()` runs on. Getting the constants wrong doesn't break anything
+  visibly obvious; it just leaves the toolbar a couple of pixels off wherever
+  the border was left out of the arithmetic, caught by the browser suite
+  comparing its bounding box to the line's rather than by eye.
+- **Appended straight to `document.body`**, like the context menu, and for
+  the same reason: `position: fixed` coordinates from `coordsAtPos` are
+  viewport-relative, and a floating element has no business inside the
+  pane's own scrolling, flexed layout. `z-index: 45` — above the mobile
+  topbar and the sidebar drawer, below the context menu and the drive
+  picker's scrim, neither of which is ever open while this is.
+- **Hidden whenever the editor doesn't have focus**
+  (`view.hasFocus()`), not just when the cursor leaves a list item. Tapping
+  one of the two buttons never triggers this, because the same event-swallowing
+  that keeps the tap from being an edit (see `editorButton` below) also keeps
+  it from being a blur.
+- **`editorButton`, the same helper the checkbox-list sort handle and the
+  `todo` block's controls use** — not a hand-rolled `pointerdown`. A button
+  drawn over the document, inside or outside the contenteditable region, is
+  outside the browser's ordinary click handling as far as ProseMirror's
+  selection is concerned: an unguarded click would move focus to the button
+  first, taking the selection the command is meant to act on with it, and
+  by the time a plain `onClick` fired there would be nothing left to indent.
+- **Shown only where `wideRef.current` says the screen is narrow** — a ref,
+  not the `wide` value in scope when the plugin was built, because the
+  plugin is created once when the editor mounts (`useEffect`'s dependency
+  list is `[file.id, store]`, not screen width) and has to read the *current*
+  answer on every keystroke. Without the ref, resizing across the breakpoint
+  wouldn't be noticed until the next file was opened and the editor remounted.
 - **Plain text only — the code-block editor (CodeMirror) has its own separate
   Tab keymap** (`indentWithTab`, bundled with Crepe's code-block feature) and
   isn't reached by this at all. Out of scope here: a code block's own indent
