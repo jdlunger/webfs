@@ -304,7 +304,36 @@ function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
       // shares, overwritten by whichever one called `.create()` most
       // recently. `ctx` here is the one this plugin was built with, so this
       // reaches the editor the button is floating over and no other.
-      editorButton(el, () => ctx.get(commandsCtx).call(key));
+      const run = () => ctx.get(commandsCtx).call(key);
+      editorButton(el, run);
+      // A finger is handled on its own, with `touchstart` *prevented* — the
+      // opposite of what `editorButton` does, and on purpose. Left to itself,
+      // iOS treats a tap anywhere in the editable region as a request to put
+      // the caret there, and the nearest place to this widget is where it's
+      // anchored: position 0, outside the list. The indent landed, then the
+      // selection moved to the top of the note and the toolbar hid itself,
+      // so it worked exactly once. Preventing `touchstart` is what stops iOS
+      // doing anything with the tap at all — no caret move, no blur, and no
+      // emulated click afterwards, which is why the command runs from
+      // `touchend` here. (The sort handle and the todo rows can't do this:
+      // a row has to stay scrollable, and a list's handle is anchored inside
+      // the list, where a moved caret is harmless.)
+      el.addEventListener(
+        "touchstart",
+        event => {
+          event.preventDefault();
+          event.stopPropagation();
+        },
+        { passive: false },
+      );
+      el.addEventListener("touchend", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        // Only a tap that ends on the button counts; sliding off it is how
+        // anyone takes back a press they didn't mean.
+        const touch = event.changedTouches[0];
+        if (touch && el.contains(document.elementFromPoint(touch.clientX, touch.clientY))) run();
+      });
       return el;
     };
     root.append(button("⇤", "Outdent", liftListItemCommand.key), button("⇥", "Indent", sinkListItemCommand.key));
@@ -332,7 +361,7 @@ function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
     props: {
       decorations: state => indentToolbarKey.getState(state),
     },
-    view() {
+    view(editorView) {
       const reposition = (view: ProseView) => {
         if (!root) return;
         // Shown only where there's no Tab key to press, and only with the
@@ -356,10 +385,25 @@ function listIndentToolbar(ctx: Ctx, wideRef: { current: boolean }) {
         }
       };
 
-      return { update: reposition };
-      // No destroy: this DOM node belongs to the decoration, and ProseMirror
-      // tears that down itself along with the rest of the document's DOM
-      // when the editor is destroyed.
+      // `coordsAtPos` is a screen position, so it goes stale the moment
+      // anything scrolls — the note under a finger, or ProseMirror bringing
+      // the cursor back into view after an indent, which happens *after*
+      // plugin views are updated. Captured, because the element scrolling is
+      // `.milkdown-root`, not the window, and scroll events don't bubble.
+      const onScroll = () => reposition(editorView);
+      window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+      window.visualViewport?.addEventListener("resize", onScroll);
+
+      return {
+        update: reposition,
+        // The toolbar's DOM node belongs to the decoration, and ProseMirror
+        // tears that down itself along with the rest of the document's DOM;
+        // only the listeners are this view's to remove.
+        destroy: () => {
+          window.removeEventListener("scroll", onScroll, { capture: true });
+          window.visualViewport?.removeEventListener("resize", onScroll);
+        },
+      };
     },
   });
 }

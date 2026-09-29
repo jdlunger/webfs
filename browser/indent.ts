@@ -109,25 +109,51 @@ export default async function run(browser: Browser): Promise<number> {
     JSON.stringify({ toolbarBox, lineBox }),
   );
 
-  // Indenting now has to nest "two" under "one" and leave "one" where it was.
-  await page.click(INDENT);
-  const indented = await waitUntil("the indent to reach OPFS", async () => {
-    const line = await lineWith(page, path, "two");
-    return !!line && /^\s+-\s/.test(line);
-  });
+  const nested = async () => /^\s+-\s/.test((await lineWith(page, path, "two")) ?? "");
+  const flat = async () => /^-\s/.test((await lineWith(page, path, "two")) ?? "");
+  /** Whether the caret is still in the editor, inside the "two" item. */
+  const caretInTwo = () =>
+    page.evaluate(() => {
+      const editor = document.querySelector(".pane-focused .ProseMirror");
+      const anchor = window.getSelection()?.anchorNode;
+      const item = anchor instanceof Element ? anchor.closest("li") : anchor?.parentElement?.closest("li");
+      return document.activeElement === editor && !!item?.querySelector("p")?.textContent?.includes("two");
+    });
+
+  // Tapped, not clicked: a finger is its own code path (see listIndentToolbar),
+  // and it's the one a phone uses. Indenting has to nest "two" under "one"
+  // and leave "one" where it was.
+  await page.tap(INDENT);
+  const indented = await waitUntil("the indent to reach OPFS", nested);
   checks.ok("the indent button nests the item", indented, await stored(page, path));
   checks.ok(
     "the item above it is untouched",
     /^-\s+one\s*$/.test((await lineWith(page, path, "one")) ?? ""),
     await stored(page, path),
   );
+  // The toolbar used to work exactly once on iOS: the tap moved the caret to
+  // the widget's anchor at the top of the note, outside the list, and the
+  // toolbar hid itself behind the indent it had just made.
+  checks.ok("the toolbar is still there after a tap", await page.locator(TOOLBAR).isVisible());
+  checks.ok("and the caret is still in the item it indented", await caretInTwo());
 
-  await page.click(OUTDENT);
-  const outdented = await waitUntil("the outdent to reach OPFS", async () => {
-    const line = await lineWith(page, path, "two");
-    return !!line && /^-\s/.test(line);
-  });
+  await page.tap(OUTDENT);
+  const outdented = await waitUntil("the outdent to reach OPFS", flat);
   checks.ok("the outdent button un-nests it again", outdented, await stored(page, path));
+
+  // And again, from the same toolbar without touching the text in between.
+  await page.tap(INDENT);
+  const again = await waitUntil("a second indent to reach OPFS", nested);
+  await page.tap(OUTDENT);
+  const back = again && (await waitUntil("a second outdent to reach OPFS", flat));
+  checks.ok("it keeps working tap after tap", back, await stored(page, path));
+
+  // A mouse is still the other route in.
+  await page.click(INDENT);
+  const clicked = await waitUntil("a clicked indent to reach OPFS", nested);
+  checks.ok("a click works too", clicked && (await caretInTwo()), await stored(page, path));
+  await page.click(OUTDENT);
+  await waitUntil("a clicked outdent to reach OPFS", flat);
 
   // Moving the cursor back out of the list — into the paragraph above it —
   // takes the toolbar with it.

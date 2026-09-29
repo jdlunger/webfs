@@ -170,6 +170,24 @@ without this there was no way to indent a list on a phone, full stop.
   selection is concerned: an unguarded click would move focus to the button
   first, taking the selection the command is meant to act on with it, and
   by the time a plain `onClick` fired there would be nothing left to indent.
+- **…but a finger bypasses it, with `touchstart` *prevented*.** `editorButton`
+  only stops `touchstart`, so iOS still treats the tap as "put the caret
+  here", and the nearest place to a widget anchored at position 0 is the top
+  of the note — outside the list. On a real phone the indent landed and the
+  toolbar then hid itself, so it worked exactly once. Preventing `touchstart`
+  (non-passive) stops iOS acting on the tap at all, including the emulated
+  click, which is why these two buttons run their command from `touchend`
+  (only if the finger is still over the button). The sort handle and the
+  `todo` rows keep the shared behaviour: a row has to stay scrollable, and
+  a list's handle is anchored inside the list. Chromium doesn't move the
+  caret on a tap, so the suite can show the touch path runs and the toolbar
+  survives it, but not reproduce the iOS failure itself.
+- **Repositioned on scroll, not only on transactions.** `coordsAtPos` is a
+  screen position; scrolling the note, or ProseMirror scrolling the cursor
+  into view after an indent (which happens after plugin views update), would
+  otherwise leave the toolbar floating over the wrong line. The listener is
+  on `window` in the capture phase because what scrolls is `.milkdown-root`,
+  and scroll events don't bubble.
 - **Shown only where `wideRef.current` says the screen is narrow** — a ref,
   not the `wide` value in scope when the plugin was built, because the
   plugin is created once when the editor mounts (`useEffect`'s dependency
