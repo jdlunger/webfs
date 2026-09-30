@@ -59,10 +59,8 @@ the one way to push text into an uncontrolled editor. It costs the cursor
 position and undo history, so never bump it for local typing.
 
 - Import individual `@milkdown/crepe/theme/common/*.css` files, **not** the
-  `theme/common/style.css` bundle — that bundle `@import`s `latex.css`,
-  which pulls in KaTeX's full font set (~1.4MB of base64 fonts) even with
-  the Latex feature disabled. The Latex feature itself is turned off via
-  `features: { [Crepe.Feature.Latex]: false }` in the `Crepe` constructor.
+  `theme/common/style.css` bundle, so what's pulled in is what's actually
+  switched on. See Maths below for the one that's expensive.
 - To reach ProseMirror/Milkdown config Crepe doesn't expose directly (e.g.
   the `spellcheck`/`autocorrect`/`autocapitalize` attributes on the
   contenteditable), call `crepe.editor.config(ctx => ctx.update(...))`
@@ -198,6 +196,38 @@ without this there was no way to indent a list on a phone, full stop.
   Tab keymap** (`indentWithTab`, bundled with Crepe's code-block feature) and
   isn't reached by this at all. Out of scope here: a code block's own indent
   is a different editor entirely.
+## Maths (`$e^{i\pi}+1=0$`)
+
+Crepe's own Latex feature, which is KaTeX. Enabled by *not* turning it off —
+every Crepe feature is on by default — plus
+`import "@milkdown/crepe/theme/common/latex.css"` alongside the other common
+styles in `Editor.tsx`. That is the whole of it; there is no webfs code here.
+
+- **It was switched off for its stylesheet, not for itself.** The original
+  note said the Latex feature cost ~1.4MB, which was true of the *CSS* and
+  only the CSS: `latex.css` `@import`s `katex.min.css`, whose `url()`s Bun's
+  CSS bundler inlines as base64, so the css chunk goes from 70KB to 1496KB.
+  KaTeX's JavaScript was in the bundle the whole time regardless — Crepe
+  imports its feature modules statically and the flag only gates activation,
+  so the built JS is byte-for-byte the same size with the feature on as with
+  it off (checked, not assumed). Turning the feature back on buys maths for
+  CSS alone.
+- **`$…$` is inline, `$$…$$` is a block**, which is what GitHub and Obsidian
+  render too — so a note with maths in it means the same thing in all three.
+  That is the reason not to reach for `micromark-extension-math`'s
+  `singleDollarTextMath: false`: it would fix the next bullet by forcing
+  `$$…$$` for inline maths, which those two then draw as a centred block.
+- **Prose dollars are eaten, and this is the known defect.** `The coffee cost
+  $5 and the cake cost $4` parses as a formula and draws as `5andthecakecost4`.
+  The file is untouched — `preserve.ts` writes back the lines nobody typed on,
+  verified byte-identical after opening such a note — so it costs a wrong
+  display, not data. The fix is a flanking rule (an inline formula may not
+  open or close on whitespace, which is how CommonMark's emphasis behaves and
+  what Obsidian does), applied as a remark plugin that turns a non-flanking
+  `inlineMath` back into the text it was spelt as. Not done yet.
+- **Opening a note with maths in it doesn't rewrite it**, checked in a real
+  browser rather than assumed, which is the thing that would have made this
+  unsafe to ship — see "Nothing is rewritten except where the user typed".
 
 ## The plain-text view
 

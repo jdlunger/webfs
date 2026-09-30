@@ -42,15 +42,17 @@ import {
 } from "./fences";
 import { isIdentity, openTasksIn, orderByDone, type TaskSummary } from "./tasks";
 // Import the common feature styles individually rather than the
-// `theme/common/style.css` bundle: that bundle pulls in `latex.css`, which
-// `@import`s KaTeX's full font set (~1.4MB of base64 fonts) even though the
-// latex feature is disabled below.
+// `theme/common/style.css` bundle, so that what's pulled in is what's
+// actually switched on below. `latex.css` is the expensive one — it
+// `@import`s KaTeX's stylesheet, which carries its whole font set inline as
+// base64 (~1.4MB before compression), and that is the price of maths.
 import "@milkdown/crepe/theme/common/reset.css";
 import "@milkdown/crepe/theme/common/prosemirror.css";
 import "@milkdown/crepe/theme/common/block-edit.css";
 import "@milkdown/crepe/theme/common/code-mirror.css";
 import "@milkdown/crepe/theme/common/cursor.css";
 import "@milkdown/crepe/theme/common/image-block.css";
+import "@milkdown/crepe/theme/common/latex.css";
 import "@milkdown/crepe/theme/common/link-tooltip.css";
 import "@milkdown/crepe/theme/common/list-item.css";
 import "@milkdown/crepe/theme/common/placeholder.css";
@@ -961,9 +963,6 @@ function MilkdownEditor({ file, store, onChange, onAssetAdded, findTasks, onOpen
     const crepe = new Crepe({
       root: containerRef.current,
       defaultValue: file.content ?? "",
-      features: {
-        [Crepe.Feature.Latex]: false,
-      },
       featureConfigs: {
         [Crepe.Feature.BlockEdit]: {
           buildMenu: builder => {
