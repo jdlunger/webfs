@@ -767,6 +767,17 @@ body.resizing-sidebar {
   border-color: #555;
 }
 
+/* --- a checked item ------------------------------------------------------- */
+
+/* Struck through and dimmed, so a list reads as what's left. Crepe marks the
+   state on the checkbox icon, not the item, hence the `:has`. Only the item's
+   own paragraphs: a sub-list travels inside its parent's `.content-dom`, and
+   ticking "Groceries" says nothing about whether the milk under it is done. */
+.milkdown .milkdown-list-item-block li:has(> .label-wrapper > .label.checked) > .children > .content-dom > p {
+  text-decoration: line-through;
+  color: #777;
+}
+
 /* --- the todo fence -------------------------------------------------------- */
 
 /* Drawn from the drive rather than from the document, so nothing in here is

@@ -47,7 +47,7 @@ const BOARD_TEXT = [
 
 const OWN = "Own.md";
 /** A block and a checkbox in one note: the case where ticking has to remount. */
-const OWN_TEXT = ["# Mine", "", "```todo Own.md", "```", "", "- [ ] Tidy the board", ""].join("\n");
+const OWN_TEXT = ["# Mine", "", "```todo Own.md", "```", "", "- [ ] Tidy the board", "  - with a cloth", ""].join("\n");
 
 export default async function run(browser: Browser): Promise<number> {
   const checks = new Checks("checkbox lists and the todo fence");
@@ -217,6 +217,18 @@ export default async function run(browser: Browser): Promise<number> {
         (await page.locator(`${label}.unchecked`).count()) === 0,
     ),
   );
+  // Computed style, not the rule existing: a selector that matched nothing is
+  // exactly as quiet as one that was never written.
+  const struck = await page
+    .locator(".pane-focused .milkdown-root .ProseMirror li:has(> .label-wrapper > .label.checked) p", { hasText: "Tidy the board" })
+    .first()
+    .evaluate((p) => getComputedStyle(p).textDecorationLine);
+  checks.ok("and draws the ticked item struck through", struck === "line-through", struck);
+  const nested = await page
+    .locator(".pane-focused .milkdown-root .ProseMirror p", { hasText: "with a cloth" })
+    .first()
+    .evaluate((p) => getComputedStyle(p).textDecorationLine);
+  checks.ok("but not what is nested under it", nested === "none", nested);
 
   // --- and the fence survives being typed around -----------------------------
 

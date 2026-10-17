@@ -1411,6 +1411,11 @@ which draws the unfinished ones from the whole drive wherever it is written.
   state is a `checked`/`unchecked` class, which is what `bun run browser todo`
   reads. The only real `<input type="checkbox">` inside the editor is the
   block's own tick, so looking for one finds the wrong thing.
+- **A ticked item is struck through and dimmed**, by CSS alone (`li:has(>
+  .label-wrapper > .label.checked)` in `index.css`) — Crepe puts the state on
+  the icon rather than the item. Only the item's own paragraphs: a sub-list
+  lives inside its parent's content, and ticking a parent says nothing about
+  its children. Nothing is written to the file.
 - **Neither shows up in the plain-text view**, which is the source and shows
   the fence as the four characters it is. That is the same rule the rest of
   that view follows rather than an omission.
