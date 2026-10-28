@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>webfs help</title>
+<!--
+  A plain static page, deliberately: no bundle, no <script>, no <link>. It is
+  copied into dist/ with the rest of public/ and served as-is, and having no
+  asset tags is also what keeps sw.js from mistaking it for the app shell
+  when it scrapes a navigation (see cacheShell there).
+-->
+<style>
+  :root {
+    --bg: #1a1a1a;
+    --panel: #222;
+    --border: #333;
+    --text: #ddd;
+    --muted: #999;
+    --heading: #fff;
+    --accent: #7aa7ff;
+    --code-bg: #2a2a2a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa;
+      --panel: #fff;
+      --border: #ddd;
+      --text: #222;
+      --muted: #666;
+      --heading: #000;
+      --accent: #2559c7;
+      --code-bg: #f0f0f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 0 max(16px, env(safe-area-inset-right)) 48px max(16px, env(safe-area-inset-left));
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  header {
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: max(12px, env(safe-area-inset-top)) 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    z-index: 1;
+  }
+  header h1 { margin: 0; font-size: 20px; color: var(--heading); flex: 1; }
+  a { color: var(--accent); }
+  .back {
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    white-space: nowrap;
+  }
+  nav.toc {
+    margin: 20px 0;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    columns: 2 200px;
+    font-size: 14px;
+  }
+  nav.toc a { display: block; padding: 3px 0; text-decoration: none; }
+  h2 {
+    color: var(--heading);
+    font-size: 19px;
+    margin: 40px 0 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    scroll-margin-top: 64px;
+  }
+  h3 { color: var(--heading); font-size: 16px; margin: 24px 0 6px; }
+  p, li { max-width: 68ch; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  code, kbd {
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  kbd { border: 1px solid var(--border); }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; }
+  .note { color: var(--muted); font-size: 14px; }
+  .btn {
+    display: inline-block;
+    min-width: 1.6em;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 5px;
+    background: var(--panel);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>webfs help</h1>
+  <a class="back" href="./">← Back to notes</a>
+</header>
+
+<p>webfs is a file explorer and markdown editor that runs entirely in your
+browser. Your files live on this device (in the browser's private file
+storage), and can optionally be synced to a GitHub repository. There is no
+server and no account.</p>
+
+<nav class="toc">
+  <a href="#files">Files and folders</a>
+  <a href="#search">Searching and sorting</a>
+  <a href="#tabs">Tabs and split view</a>
+  <a href="#writing">Writing markdown</a>
+  <a href="#slash">The slash menu</a>
+  <a href="#maths">Maths</a>
+  <a href="#checkboxes">Checkboxes</a>
+  <a href="#todo">The <code>todo</code> block</a>
+  <a href="#images">Images</a>
+  <a href="#obsidian">Obsidian embeds and links</a>
+  <a href="#pdf">PDFs and other files</a>
+  <a href="#source">Plain-text view</a>
+  <a href="#drives">Drives</a>
+  <a href="#github">GitHub sync</a>
+  <a href="#share">Sharing a drive</a>
+  <a href="#phone">On a phone</a>
+  <a href="#offline">Offline and installing</a>
+  <a href="#keys">Keyboard</a>
+  <a href="#trouble">When something goes wrong</a>
+</nav>
+
+<h2 id="files">Files and folders</h2>
+<ul>
+  <li><span class="btn">+ File</span> and <span class="btn">+ Folder</span> at the top of the sidebar create
+    at the top level. In a narrow sidebar they fold into a single <span class="btn">＋</span>.</li>
+  <li><strong>Right-click</strong> a row (or <strong>long-press</strong> it on a touch screen) for
+    its menu: New File, New Folder, Import Files…, Open, Open to the Side, Rename, Move to…, Delete.
+    Right-click the empty space below the tree for the same actions at the top level.</li>
+  <li><strong>Rename:</strong> double-click a name, or use Rename in the menu.</li>
+  <li><strong>Move:</strong> drag a row onto a folder (or onto the empty area for the top level), or use
+    <em>Move to…</em>, which lists every folder.</li>
+  <li><strong>Import</strong> files from your device with the import icon in the sidebar header, with
+    <em>Import Files…</em> in any menu, or by dropping files onto the tree from your desktop. Dropping
+    onto a file puts them in that file's folder.</li>
+  <li>Folders open and close with their chevron. A drive you've just connected starts folded up.</li>
+  <li>Drag the sidebar's right edge to resize it; double-click the edge to reset.</li>
+  <li>Changes save automatically about half a second after you stop typing.</li>
+  <li>Names can contain spaces, accents and emoji. Two things in one folder can't share a name, so a
+    new one becomes <code>notes 2.md</code>.</li>
+</ul>
+
+<h2 id="search">Searching and sorting</h2>
+<ul>
+  <li><span class="btn">🔍</span> filters the tree by name. A folder whose name matches shows everything
+    inside it. <kbd>Esc</kbd> closes the search and brings back your folded tree as it was.</li>
+  <li><span class="btn">⇅</span> chooses the order: Name (A–Z / Z–A), Modified (newest / oldest first),
+    Created (newest / oldest first). Folders always come first, by name.</li>
+  <li>"Created" means when a file first appeared on <em>this</em> device. Files that were already here
+    before that was recorded have no date and sort last.</li>
+</ul>
+
+<h2 id="tabs">Tabs and split view</h2>
+<ul>
+  <li>Opening a file adds a tab. <span class="btn">×</span> on a tab closes it.</li>
+  <li><span class="btn">▥</span> splits the editor into two panes; the new one starts empty — click a file
+    to fill it, or use <em>Open to the Side</em>. <span class="btn">✕</span> closes the second pane.</li>
+  <li>A file is only ever open in one pane; opening it again jumps to where it is.</li>
+  <li>The address bar follows the file you're looking at, so you can bookmark or share a link to a note.</li>
+  <li>Open tabs, folded folders and the sort order are remembered per drive across reloads.</li>
+  <li>Several browser tabs can have webfs open at once; edits made in one appear in the others.</li>
+</ul>
+
+<h2 id="writing">Writing markdown</h2>
+<p>The editor is WYSIWYG: type markdown and it's formatted as you go. The file on disk stays plain
+markdown, readable by GitHub, Obsidian or any text editor. Selecting text shows a formatting toolbar.</p>
+<pre><code># Heading 1
+## Heading 2
+### Heading 3
+
+**bold**, *italic*, ~~strikethrough~~, `inline code`
+
+[a link](https://example.com)
+
+- a bullet list
+  - nested (Tab / Shift-Tab to indent and outdent)
+1. a numbered list
+
+&gt; a block quote
+
+---
+
+```js
+console.log("a code block, with syntax highlighting");
+```
+
+| Column | Another |
+| ------ | ------- |
+| cell   | cell    |</code></pre>
+<p class="note">Only the lines you actually edit are rewritten. Opening or reading a note never changes it,
+and a note written elsewhere keeps its own style (tabs, <code>*</code> bullets, and so on) on every line
+you haven't touched.</p>
+
+<h2 id="slash">The slash menu</h2>
+<p>Type <kbd>/</kbd> at the start of an empty line for a menu of blocks to insert: headings, lists,
+quotes, code, tables, images, maths, dividers — and webfs's own <strong>Todo list</strong> (see
+<a href="#todo">below</a>). Keep typing to filter it, e.g. <code>/tab</code> or <code>/todo</code>.</p>
+
+<h2 id="maths">Maths</h2>
+<p>LaTeX, drawn with KaTeX. Single dollars are inline, double dollars are a block — the same as GitHub
+and Obsidian.</p>
+<pre><code>Euler's identity is $e^{i\pi} + 1 = 0$.
+
+$$
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+$$</code></pre>
+<p class="note">Known issue: two prices on one line (<code>$5 and $4</code>) are read as a formula. The
+file is untouched; only the display is wrong.</p>
+
+<h2 id="checkboxes">Checkboxes</h2>
+<pre><code>- [ ] buy milk
+- [x] call the bank
+- [ ] write report
+  - [ ] outline
+  - [x] gather numbers</code></pre>
+<ul>
+  <li>Click a box to tick it. Ticked items are struck through and dimmed.</li>
+  <li>Every checkbox list gets a <span class="btn">⇅</span> just above it, which moves finished items to the
+    bottom, keeping your order otherwise. Sub-items move with their parent. On a list that's already in
+    order it does nothing at all.</li>
+</ul>
+
+<h2 id="todo">The <code>todo</code> block</h2>
+<p>A fenced code block named <code>todo</code> shows every <em>unfinished</em> checkbox from all the notes in
+the drive:</p>
+<pre><code>```todo
+```</code></pre>
+<p>Name a folder after <code>todo</code> to list only the notes inside it:</p>
+<pre><code>```todo Projects/Garden
+```</code></pre>
+<ul>
+  <li>Insert one from the slash menu with <code>/todo</code>.</li>
+  <li>Tick a row's checkbox to tick that item in the note it came from. Click the rest of the row to open
+    the note.</li>
+  <li><span class="btn">↻</span> refreshes the list. It updates by itself when the note it's written in changes.</li>
+  <li>Reads <code>.md</code>, <code>.markdown</code>, <code>.mdown</code> and <code>.txt</code> files, skips
+    checkboxes inside code blocks and empty ones, and shows at most 200 rows.</li>
+  <li>In GitHub or Obsidian it's just an empty code block — the note stays ordinary markdown.</li>
+</ul>
+
+<h2 id="images">Images</h2>
+<ul>
+  <li><strong>Paste</strong> an image (or use the slash menu's Image block to upload one) and it's saved as a
+    real file in an <code>assets/</code> folder next to the note, linked relatively:
+    <pre><code>![](assets/screenshot.png)</code></pre>
+    That same link works when the note is viewed on GitHub.</li>
+  <li>Links to images on the web work as usual: <code>![alt](https://example.com/cat.jpg)</code></li>
+  <li>Opening an image from the sidebar shows a preview rather than the editor.</li>
+</ul>
+
+<h2 id="obsidian">Obsidian embeds and links</h2>
+<p>Notes from an Obsidian vault open safely, and their embedded images are shown:</p>
+<pre><code>![[Pasted image 20260905101712.png]]
+![[diagram.png|400]]
+[[Another note]]</code></pre>
+<ul>
+  <li>An image embed is looked for next to the note first, then in a <code>Media/</code> folder at the top of
+    the drive (Obsidian's usual attachment folder).</li>
+  <li>Embeds and links that aren't images are kept exactly as written and shown as text. A broken embed shows
+    its own source so you can see which one it is.</li>
+</ul>
+
+<h2 id="pdf">PDFs and other files</h2>
+<ul>
+  <li>A PDF opens in the browser's built-in viewer, with a link to open it in a new tab — on iPhone and iPad
+    use that link, since Safari can't show a PDF inside the page properly.</li>
+  <li>Other files that aren't text are shown, never opened for editing, so they can't be damaged.</li>
+  <li>SVG images are text and can be edited.</li>
+</ul>
+
+<h2 id="source">Plain-text view</h2>
+<p><span class="btn">&lt;/&gt;</span> at the top right of a pane shows the note's raw markdown in a plain text box;
+<span class="btn">¶</span> goes back to the formatted editor. The choice is remembered per file.</p>
+
+<h2 id="drives">Drives</h2>
+<p>A drive is a top-level folder of notes. The switcher at the bottom of the sidebar shows the current drive;
+click it to switch, or add one.</p>
+<ul>
+  <li><strong>Local drive</strong> — a folder kept only in this browser.</li>
+  <li><strong>GitHub drive</strong> — a branch of a GitHub repository, kept on this device and synced both ways.</li>
+  <li>The first visit creates a local drive with a few starter notes. Drives you add start empty.</li>
+  <li>The URL names the drive: <code>…/opfs/notes/Notes/todo.md</code> is <code>Notes/todo.md</code> in the local
+    drive <code>notes</code>; <code>…/owner/repo/README.md</code> is in a GitHub drive.</li>
+  <li>Removing a drive forgets it; it doesn't delete its files.</li>
+  <li>There's no copying between drives yet: a new GitHub drive fills from the repository.</li>
+</ul>
+
+<h2 id="github">GitHub sync</h2>
+<ol>
+  <li>Add a drive, choose GitHub, and enter <code>owner/repo</code> and a branch.</li>
+  <li>Create a fine-grained personal access token with the link in the dialog (it's pre-filled — pick the
+    repository on GitHub's page), and paste it in.</li>
+  <li>Sync runs when the drive opens, a few seconds after you stop typing, every minute, and when you come
+    back online. Untick auto-sync to only sync with the button.</li>
+</ol>
+<ul>
+  <li>The strip at the bottom shows progress and when it last synced. <span class="btn">main ↗</span> opens the
+    branch on GitHub.</li>
+  <li>Edits on both sides to different parts of a file are merged. If both sides changed the same lines, this
+    device's version wins.</li>
+  <li>Nothing is lost on a conflict: a file deleted on one side but edited on the other comes back, and two
+    unrelated files with the same name are both kept, the GitHub one as <code>notes (github).md</code>.</li>
+  <li>Each sync is one commit, titled with the time and the file that changed.</li>
+  <li>Empty folders don't sync (git can't store them).</li>
+  <li>The token is stored in this browser only, never in the repository.</li>
+</ul>
+
+<h2 id="share">Sharing a drive</h2>
+<p>In a GitHub drive's settings, <strong>Share…</strong> shows a QR code and link. Opening it on another
+device asks before adding the drive there.</p>
+<p><strong>The link contains your token.</strong> Anyone who sees it, or photographs the QR code, can write to
+the repository until you revoke the token on GitHub.</p>
+
+<h2 id="phone">On a phone</h2>
+<ul>
+  <li><span class="btn">☰</span> opens the file list as a drawer.</li>
+  <li>Long-press a file or folder for its menu (rename, move, delete…).</li>
+  <li>While the cursor is in a list, a pair of buttons floats above the line to indent and outdent it — the
+    on-screen keyboard has no Tab key.</li>
+  <li>Only one pane is shown at a time.</li>
+</ul>
+
+<h2 id="offline">Offline and installing</h2>
+<ul>
+  <li>After one visit online, webfs works offline — all your files are on the device. A GitHub drive says
+    when it's offline and when it last synced, and catches up when you reconnect.</li>
+  <li>Add it to your home screen (Share → Add to Home Screen on iOS, Install on desktop/Android) to use it like
+    an app.</li>
+  <li>The small number in the top right is the build number, useful for checking you're on the latest
+    version.</li>
+</ul>
+
+<h2 id="keys">Keyboard</h2>
+<ul>
+  <li><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> — indent / outdent a list item.</li>
+  <li><kbd>/</kbd> — open the slash menu on an empty line.</li>
+  <li><kbd>Esc</kbd> — close the search box or a menu.</li>
+  <li><kbd>←</kbd> / <kbd>→</kbd> on the focused sidebar edge — resize the sidebar.</li>
+  <li>The usual <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>B</kbd>, <kbd>I</kbd>, <kbd>Z</kbd> for bold, italic and undo.</li>
+</ul>
+
+<h2 id="trouble">When something goes wrong</h2>
+<ul>
+  <li>If the app fails to start, it shows a report you can copy into a bug report, and a
+    <strong>Clear cache and reload</strong> button. That clears only the cached app — your files and settings
+    stay.</li>
+  <li>If a newer version doesn't seem to arrive, reload once more while online; the build number in the
+    corner tells you which one you have.</li>
+</ul>
+
+<p class="note" style="margin-top:40px">webfs is open source:
+<a href="https://github.com/jdlunger/webfs">github.com/jdlunger/webfs</a></p>
+</main>
+</body>
+</html>

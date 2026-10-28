@@ -410,6 +410,26 @@ body.resizing-sidebar {
   color: #fff;
 }
 
+/* The help link: a control, unlike the version beside it, so it gets the
+   tab-strip buttons' colours rather than the version's dimness. */
+.help-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-left: 1px solid #2c2c2c;
+  color: #888;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.help-link:hover {
+  background: #232323;
+  color: #fff;
+}
+
 /* Metadata, not a control: dim, inert, and out of the way of the buttons it
    sits beside. Tabular figures so the number doesn't shuffle as it grows. */
 .app-version {
@@ -520,6 +540,18 @@ body.resizing-sidebar {
      square target that has to stay 44px to be tappable. */
   .mobile-view-button {
     font-size: 14px;
+  }
+
+  /* A real tap target, the same size as the topbar's other buttons. */
+  .mobile-help-link {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: #2a2a2a;
+    color: #eee;
+    font-size: 18px;
   }
 
   .mobile-topbar-title {

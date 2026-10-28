@@ -26,9 +26,11 @@ const SHELL_PATH = new URL(SHELL_URL).pathname;
 
 // Everything the shell needs that isn't discoverable from its markup: the
 // manifest and icon <link> tags are inserted at runtime by frontend.tsx, so
-// scraping index.html will never turn them up.
+// scraping index.html will never turn them up. help.html is its own static
+// page, linked from the app rather than part of it.
 const EXTRA_PRECACHE = [
   "./manifest.webmanifest",
+  "./help.html",
   "./icons/icon-180.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -129,7 +131,10 @@ async function handleNavigate(request) {
     // the previous build has no way to shift it. Network-first is only
     // network-first if it actually reaches the network.
     const response = await fetch(request, { cache: "no-cache" });
-    if (response.ok) await cacheShell(cache, response);
+    // help.html is a page of its own, refreshed in place on each online
+    // visit; anything else navigated to is the shell.
+    if (response.ok && EXTRA_PRECACHE.includes(request.url)) await cache.put(request.url, response.clone());
+    else if (response.ok) await cacheShell(cache, response);
     return response;
   } catch (err) {
     const cached = await cache.match(SHELL_URL);
@@ -144,6 +149,11 @@ async function handleNavigate(request) {
     // ?redirect= contract, restored by the same code in App.tsx.
     const { pathname } = new URL(request.url);
     if (pathname !== SHELL_PATH) {
+      // A real page of its own (help.html) is served as itself, not bounced
+      // into the app as if it were a file path.
+      const page = await cache.match(request.url);
+      if (page) return page;
+
       const path = pathname.slice(SHELL_PATH.length - 1) || "/";
       return Response.redirect(`${SHELL_URL}?redirect=${encodeURIComponent(path)}`, 302);
     }

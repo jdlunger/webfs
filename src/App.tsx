@@ -22,7 +22,7 @@ import {
 } from "./fs";
 import { Sidebar } from "./Sidebar";
 import { Editor, ViewToggle, type EditorView } from "./Editor";
-import { TabStrip, VersionTag } from "./TabStrip";
+import { HelpLink, TabStrip, VersionTag } from "./TabStrip";
 import { WIDE_SCREEN, useMediaQuery } from "./useMediaQuery";
 import {
   type PaneLayout,
@@ -1065,6 +1065,7 @@ export function App() {
             onToggle={() => toggleView(selectedFile.id)}
           />
         ) : null}
+        <HelpLink className="help-link mobile-help-link" />
         <VersionTag />
       </div>
       <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />

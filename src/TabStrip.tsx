@@ -1,6 +1,7 @@
 import { ViewToggle, type EditorView } from "./Editor";
 import type { FileSystem } from "./fs";
 import type { Pane } from "./panes";
+import { appUrl } from "./basePath";
 import { versionLabel, versionTitle } from "./version";
 
 /**
@@ -87,6 +88,7 @@ export function TabStrip({
       )}
       {/* Only the rightmost strip: the version is the app's, not a pane's, and
           a split would otherwise show it twice. */}
+      {last ? <HelpLink /> : null}
       {last ? <VersionTag /> : null}
     </div>
   );
@@ -106,5 +108,19 @@ export function VersionTag() {
     <span className="app-version" title={versionTitle()}>
       {versionLabel()}
     </span>
+  );
+}
+
+/**
+ * The "?" beside the version: a static page (`public/help.html`) listing what
+ * the app can do, with examples. A new tab rather than a navigation, so the
+ * notes stay open behind it and a save still in its debounce isn't raced by
+ * the page going away.
+ */
+export function HelpLink({ className = "help-link" }: { className?: string }) {
+  return (
+    <a className={className} href={appUrl("help.html")} target="_blank" rel="noopener" title="Help" aria-label="Help">
+      ?
+    </a>
   );
 }

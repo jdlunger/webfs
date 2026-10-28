@@ -143,6 +143,7 @@ beforeEach(() => {
     net.routes.set(`${BASE}icons/icon-${size}.png`, { body: "png", type: "image/png" });
   }
   net.routes.set(`${BASE}404.html`, { body: "<html>redirecting</html>", type: "text/html" });
+  net.routes.set(`${BASE}help.html`, { body: "<html>help v1</html>", type: "text/html" });
 });
 
 // Read from sw.js rather than hardcoded: bumping CACHE_NAME is a routine,
@@ -162,6 +163,7 @@ test("install caches the hashed chunks the shell references, not just the shell"
       BASE,
       `${BASE}chunk-aaa.js`,
       `${BASE}chunk-bbb.css`,
+      `${BASE}help.html`,
       `${BASE}icons/icon-180.png`,
       `${BASE}icons/icon-192.png`,
       `${BASE}icons/icon-512.png`,
@@ -212,6 +214,24 @@ test("an offline load of the app root serves the shell directly, no redirect loo
   const page = await sw.navigate(BASE);
   expect(page!.status).toBe(200);
   expect(await page!.text()).toContain("chunk-aaa.js");
+});
+
+test("the help page is served as itself offline, and refreshed by an online visit", async () => {
+  const sw = await loadWorker(net, cacheStorage);
+  await sw.install();
+
+  net.routes.set(`${BASE}help.html`, { body: "<html>help v2</html>", type: "text/html" });
+  const online = await sw.navigate(`${BASE}help.html`);
+  expect(await online!.text()).toBe("<html>help v2</html>");
+
+  net.online = false;
+  const offline = await sw.navigate(`${BASE}help.html`);
+  expect(offline!.status).toBe(200);
+  expect(await offline!.text()).toBe("<html>help v2</html>");
+
+  // ...and it never stood in for the shell.
+  const shell = await sw.navigate(BASE);
+  expect(await shell!.text()).toContain("chunk-aaa.js");
 });
 
 test("a deep link's 404 is never cached as the app shell", async () => {

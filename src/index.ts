@@ -20,6 +20,9 @@ const server = serve({
     "/sw.js": new Response(Bun.file("public/sw.js"), {
       headers: { "content-type": "text/javascript" },
     }),
+    "/help.html": new Response(Bun.file("public/help.html"), {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }),
     "/icons/icon-180.png": new Response(Bun.file("public/icons/icon-180.png")),
     "/icons/icon-192.png": new Response(Bun.file("public/icons/icon-192.png")),
     "/icons/icon-512.png": new Response(Bun.file("public/icons/icon-512.png")),

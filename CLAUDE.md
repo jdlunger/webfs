@@ -1695,6 +1695,25 @@ If the deploy target or path ever changes, both the `"/webfs"` literal in
   importing it into Bun — which has `process` — would pass without ever
   reaching the case the try/catch is for.
 
+## The help page (`public/help.html`)
+
+A hand-written static page listing what the app does, with markdown examples,
+linked from the `?` beside the version (`HelpLink` in `TabStrip.tsx`, rendered
+in the same two places as `VersionTag`). **Update it when a feature lands or
+changes** — nothing generates it.
+
+- **Static, outside the bundle**, like `404.html`: copied by the workflow's
+  `cp -r public/. dist/`, and served by an explicit route in `src/index.ts`
+  for `bun dev`, for the same reason the manifest has one.
+- **No `<script>` or `<link>` tags, inline styles only.** It's a navigation,
+  and `sw.js` treats a navigation's HTML as the shell; one with no asset tags
+  is what `cacheShell` ignores rather than caching over the real one.
+- **Offline it's served as itself.** It's in `EXTRA_PRECACHE`, refreshed on
+  each online visit, and the worker's offline branch checks the cache before
+  bouncing a non-root path into the app as `?redirect=` — which would open it
+  as a file called `help.html`. `sw.test.ts` covers both.
+- **Opens in a new tab**, so the notes stay open behind it.
+
 ## PWA (Add to Home Screen)
 
 `public/manifest.webmanifest`, `public/sw.js`, and `public/icons/*.png` make
